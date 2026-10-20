@@ -37,6 +37,10 @@ export const DEFAULTS = Object.freeze({
   surgePrefix: 'dsh-share',
   pageTheme: 'paper',
   pageThemeCss: '',
+  toolShareSession: false,
+  toolShareArtifact: false,
+  toolShareList: false,
+  toolShareRevoke: false,
 })
 
 export const Config = Schema.object({
@@ -66,6 +70,10 @@ export const Config = Schema.object({
     .volatile()
     .description('分享页预设风格；custom = 只用 pageThemeCss'),
   pageThemeCss: Schema.string().default('').volatile().description('自定义 CSS，追加在预设之后（可只写变量覆盖）'),
+  toolShareSession: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_session（默认关闭）'),
+  toolShareArtifact: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_artifact（默认关闭）'),
+  toolShareList: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_list（默认关闭）'),
+  toolShareRevoke: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_revoke（默认关闭）'),
 })
 
 /**
@@ -144,6 +152,7 @@ export function apply(ctx, config = {}) {
       ctx.on('loader/volatile-update', () => {
         liveConfig = readConfig(config)
         manager.config = liveConfig
+        syncTools()
       }),
     'share-link: live config',
   )
@@ -161,11 +170,12 @@ export function apply(ctx, config = {}) {
   )
 
   // ------------------------------------------------------------------ tools
+  //
+  // 四个工具**默认关闭**：agent 不应在用户没同意的情况下把内容发到公网。
+  // 开关是 volatile 叶，改完在 loader/volatile-update 里重新注册，无需重挂载。
 
-  ctx.effect(
-    () =>
-      ctx.tools.register(
-        defineTool({
+  const TOOL_DEFS = {
+    toolShareSession: defineTool({
           name: 'share_session',
           description:
             'Publish a read-only snapshot of the current session as a public link. Use when the user asks to share this conversation. The snapshot is static, redacted, and stops working after revocation or expiry.',
@@ -195,14 +205,7 @@ export function apply(ctx, config = {}) {
             return describeShare(entry)
           },
         }),
-      ),
-    'share-link: tool share_session',
-  )
-
-  ctx.effect(
-    () =>
-      ctx.tools.register(
-        defineTool({
+    toolShareArtifact: defineTool({
           name: 'share_artifact',
           description:
             'Publish a local file or directory (HTML page, Markdown, slides, build output) as a read-only public link. Directories must contain index.html; a single .html file is served at the link root.',
@@ -227,14 +230,7 @@ export function apply(ctx, config = {}) {
             return describeShare(entry)
           },
         }),
-      ),
-    'share-link: tool share_artifact',
-  )
-
-  ctx.effect(
-    () =>
-      ctx.tools.register(
-        defineTool({
+    toolShareList: defineTool({
           name: 'share_list',
           description: 'List the currently active share links with their ids, kinds, and expiry.',
           parameters: {},
@@ -250,14 +246,7 @@ export function apply(ctx, config = {}) {
               .join('\n')
           },
         }),
-      ),
-    'share-link: tool share_list',
-  )
-
-  ctx.effect(
-    () =>
-      ctx.tools.register(
-        defineTool({
+    toolShareRevoke: defineTool({
           name: 'share_revoke',
           description: 'Revoke one share link by id. The link stops working immediately and its snapshot is deleted from disk.',
           parameters: {
@@ -267,8 +256,27 @@ export function apply(ctx, config = {}) {
           execute: async (args) =>
             (await manager.revoke(args.id)) ? `已撤销 ${args.id}，链接立即失效。` : `没有找到 ${args.id}`,
         }),
-      ),
-    'share-link: tool share_revoke',
+  }
+
+  const toolDisposers = new Set()
+  function syncTools() {
+    for (const dispose of toolDisposers) dispose()
+    toolDisposers.clear()
+    for (const [flag, definition] of Object.entries(TOOL_DEFS)) {
+      if (liveConfig[flag] !== true) continue
+      toolDisposers.add(ctx.tools.register(definition))
+    }
+  }
+
+  ctx.effect(
+    () => {
+      syncTools()
+      return () => {
+        for (const dispose of toolDisposers) dispose()
+        toolDisposers.clear()
+      }
+    },
+    'share-link: tools',
   )
 
   // ----------------------------------------------------------------- routes

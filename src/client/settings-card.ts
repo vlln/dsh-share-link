@@ -31,6 +31,14 @@ function channelOf(cfg) {
   return cfg.tunnelMode === 'named' ? 'named' : 'quick'
 }
 
+/** 四个 agent 工具：默认关闭，在设置卡里逐个开。 */
+const TOOL_FLAGS = [
+  { key: 'toolShareSession', name: 'share_session', hintKey: 'tools.session' },
+  { key: 'toolShareArtifact', name: 'share_artifact', hintKey: 'tools.artifact' },
+  { key: 'toolShareList', name: 'share_list', hintKey: 'tools.list' },
+  { key: 'toolShareRevoke', name: 'share_revoke', hintKey: 'tools.revoke' },
+]
+
 /** 每个渠道的说明、步骤、入口链接与需要的字段——普通用户只看这里。 */
 const CHANNEL_INFO = {
   quick: {
@@ -476,6 +484,40 @@ export function SettingsCard(props) {
     section('surge', ['surgeToken']),
     section('named', ['tunnelToken', 'tunnelHostname']),
 
+    // ---- Agent 工具（默认关闭，按需开启）
+    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '20px 0 2px' } }, t('tools.title')),
+    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 8 } }, t('tools.hint')),
+    el(
+      'div',
+      { style: { display: 'flex', flexDirection: 'column' } },
+      TOOL_FLAGS.map((item) =>
+        el(
+          'label',
+          {
+            key: item.key,
+            'data-share-tool': item.key,
+            style: {
+              display: 'flex', alignItems: 'center', gap: 12, padding: '9px 0',
+              borderBottom: '0.5px solid var(--dsw-alias-border-l2)', cursor: disabled ? 'default' : 'pointer',
+            },
+          },
+          el(
+            'span',
+            { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
+            el('span', { style: { fontSize: 12.5, fontFamily: 'ui-monospace, Menlo, monospace' } }, item.name),
+            el('span', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t(item.hintKey)),
+          ),
+          el('input', {
+            type: 'checkbox',
+            checked: state.value[item.key] === true,
+            disabled,
+            onChange: (event) => commit(item.key, event.target.checked),
+            style: { width: 16, height: 16, accentColor: 'var(--dsw-alias-brand, #4d6bfe)', cursor: 'pointer' },
+          }),
+        ),
+      ),
+    ),
+
     // ---- 分享页样式
     el('div', { style: { fontSize: 13, fontWeight: 500, margin: '20px 0 2px' } }, t('theme.title')),
     el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 10 } }, t('theme.hint')),
@@ -600,6 +642,12 @@ export const zh = {
   summary: '发布渠道、参数与已发布的链接',
   recommended: '推荐',
   checking: '检查中',
+  'tools.title': 'Agent 工具',
+  'tools.hint': '默认全部关闭：开启后 agent 才能自己发链接。改动对**新会话**生效，已打开的会话保持原样。',
+  'tools.session': '把当前会话发布成只读快照',
+  'tools.artifact': '发布本地文件或目录',
+  'tools.list': '列出还活着的链接',
+  'tools.revoke': '撤销某条链接',
   'theme.title': '分享页样式',
   'theme.hint': '选一个预设，或选「自定义」写 CSS（变量：--bg --fg --muted --line --code-bg --accent）。新分享生效，已发布的不会变。',
   'theme.paper': '暖纸',
@@ -670,6 +718,12 @@ export const en = {
   summary: 'Publishing channels, their settings, and active links',
   recommended: 'recommended',
   checking: 'checking',
+  'tools.title': 'Agent tools',
+  'tools.hint': 'All off by default: the agent can only publish once you enable a tool here. Changes apply to new sessions.',
+  'tools.session': 'Publish the current session as a read-only snapshot',
+  'tools.artifact': 'Publish a local file or directory',
+  'tools.list': 'List active links',
+  'tools.revoke': 'Revoke a link',
   'theme.title': 'Share page style',
   'theme.hint': 'Pick a preset, or choose Custom and write CSS (vars: --bg --fg --muted --line --code-bg --accent). Applies to new shares.',
   'theme.paper': 'Paper',

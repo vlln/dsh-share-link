@@ -96,7 +96,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
 ## 让 agent 帮你发
 
-装上之后，agent 也能直接调用：
+**默认关闭**。先在 **Plugins → Share Link → Agent 工具**里打开你想给的权限（可以只开一两个），**新开始的会话**才拿得到这些工具。打开后 agent 能直接调用：
 
 | 工具 | 说明 |
 |---|---|
