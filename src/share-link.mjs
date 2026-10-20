@@ -10,7 +10,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import {
   cpSync,
   existsSync,
@@ -413,8 +413,6 @@ export class ShareManager {
       title: '分享页样式预览',
       sessionId: 'session-预览',
       createdAt: Date.now(),
-      fingerprint: 'a1b2c3d4e5f60718',
-      redactedCount: 0,
       theme: options.theme ?? this.config.pageTheme,
       customCss: options.customCss ?? this.config.pageThemeCss,
       messages: [
@@ -509,9 +507,7 @@ export class ShareManager {
   async createSessionShare(sessionId, options = {}) {
     if (typeof sessionId !== 'string' || sessionId === '') throw new Error('createSessionShare 需要 sessionId')
     const { header, messages } = await this.#readTranscript(sessionId, options)
-    const rawText = JSON.stringify(messages)
     const safeMessages = messages.map((message) => ({ ...message, text: redact(message.text) }))
-    const redactedCount = JSON.stringify(safeMessages) === rawText ? 0 : 1
 
     let title = options.title
     if (title === undefined) title = await this.#readTitle(sessionId)
@@ -523,8 +519,6 @@ export class ShareManager {
       sessionId,
       createdAt,
       messages: safeMessages,
-      fingerprint: createHash('sha256').update(rawText).digest('hex').slice(0, 16),
-      redactedCount,
       theme: this.config.pageTheme,
       customCss: this.config.pageThemeCss,
     })

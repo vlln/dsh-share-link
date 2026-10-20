@@ -402,15 +402,12 @@ function renderMessage(message) {
  * @param {string} input.sessionId - 会话 id（展示与溯源）。
  * @param {number} input.createdAt - 快照生成时间（epoch ms）。
  * @param {Array<object>} input.messages - 已投影的消息列表。
- * @param {string} [input.fingerprint] - 内容指纹（sha256 前缀）。
- * @param {number} [input.redactedCount] - 被脱敏的处数。
  * @returns {string} 完整 HTML 文档。
  */
 export function renderSessionPage(input) {
-  const { title, sessionId, createdAt, messages, fingerprint = '', redactedCount = 0, theme, customCss } = input;
+  const { title, sessionId, createdAt, messages, theme, customCss } = input;
   const stamp = new Date(createdAt).toISOString().replace('T', ' ').slice(0, 16);
   const body = messages.map(renderMessage).join('\n');
-  const redactNote = redactedCount > 0 ? `已脱敏 ${redactedCount} 处` : '未命中常见凭据形态';
 
   return `<!doctype html>
 <html lang="zh-CN">
