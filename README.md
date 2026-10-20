@@ -107,6 +107,7 @@ dsh plugin --profile web add @vlln/dsh-share-link
 ## 已知限制
 
 - 只支持 macOS / Linux（cloudflared 下载走 `tar`）。
+- **命名隧道要求域名托管在 Cloudflare**：命名隧道本身不自带公网域名，必须在 Routes 里加一条 Published application（`<子域>.<你的域名>` → `localhost:3089`）；账号里没有域名时 `Add route` 的 Domain 下拉是空的，这条通道就用不了——改用 Surge 或快速隧道。
 - `surge` 通道需要本机有 `surge`（或在 `PATH` 上，否则退回 `npx --yes surge`）并已登录；`tunnelToken` 模式需要隧道在 Cloudflare 侧指向本机固定端口（默认 3089）。
 - 目录分享没有 `index.html` 时会生成文件列表页（递归列出相对路径）；列表页只列文件，不列空目录。
 - 快速隧道的域名每次重启都会变；要固定地址就配 `tunnelToken` + `tunnelHostname` 走命名隧道。
