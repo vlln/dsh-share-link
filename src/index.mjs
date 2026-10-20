@@ -13,7 +13,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-import { ShareManager } from './share-link.mjs'
+import { ShareError, ShareManager } from './share-link.mjs'
 
 export const name = 'dsh-share-link'
 
@@ -48,14 +48,34 @@ const TEXT_OUTPUT = {
   render: (_args, value) => [{ type: 'text', text: value }],
 }
 
+/** 失败时把引导也交给 agent，让它能直接告诉用户下一步点什么。 */
+function describeError(error) {
+  const message = String(error?.message ?? error)
+  if (!(error instanceof ShareError) || error.guide === undefined) return message
+  const { title, body, href, linkText, command } = error.guide
+  return [
+    message,
+    `引导：${title}——${body}`,
+    href === undefined ? '' : `入口：${linkText ?? href} ${href}`,
+    command === undefined || command === null ? '' : `命令：${command}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 /** 分享成功后的统一文案：链接 + 有效期 + 撤销提示。 */
 function describeShare(entry) {
   const expires = new Date(entry.expiresAt).toISOString().replace('T', ' ').slice(0, 16)
   return [
     `已发布：${entry.url}`,
     `类型：${entry.kind === 'session' ? '会话快照（只读）' : '文件/目录（只读）'} · 通道：${CHANNEL_LABEL[entry.provider] ?? entry.provider} · 到期：${expires} UTC`,
+    entry.degraded === true
+      ? `⚠️ 已降级为局域网链接：${entry.degradedReason ?? '公网通道不可用'}（链接只在同一网络内可访问）`
+      : '',
     `撤销：share_revoke id=${entry.id}`,
-  ].join('\n')
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 /**
@@ -99,11 +119,15 @@ export function apply(ctx, config = {}) {
           execute: async (args, exec) => {
             const sessionId = exec.agent?.session?.id
             if (typeof sessionId !== 'string') throw new Error('share_session 需要 agent 绑定的会话')
-            const entry = await manager.createSessionShare(sessionId, {
-              includeToolCalls: args.include_tool_calls === true,
-              title: args.title,
-              ttlHours: args.ttl_hours,
-            })
+            const entry = await manager
+              .createSessionShare(sessionId, {
+                includeToolCalls: args.include_tool_calls === true,
+                title: args.title,
+                ttlHours: args.ttl_hours,
+              })
+              .catch((error) => {
+                throw new Error(describeError(error))
+              })
             return describeShare(entry)
           },
         }),
@@ -126,11 +150,15 @@ export function apply(ctx, config = {}) {
           output: TEXT_OUTPUT,
           execute: async (args, exec) => {
             const cwd = exec.agent?.session?.header?.cwd ?? process.cwd()
-            const entry = await manager.createPathShare(args.path, {
-              cwd,
-              title: args.title,
-              ttlHours: args.ttl_hours,
-            })
+            const entry = await manager
+              .createPathShare(args.path, {
+                cwd,
+                title: args.title,
+                ttlHours: args.ttl_hours,
+              })
+              .catch((error) => {
+                throw new Error(describeError(error))
+              })
             return describeShare(entry)
           },
         }),
@@ -194,7 +222,14 @@ export function apply(ctx, config = {}) {
         try {
           return await handler(request)
         } catch (error) {
-          return json({ error: String(error?.message ?? error) }, 400)
+          return json(
+            {
+              error: String(error?.message ?? error),
+              code: error?.code,
+              guide: error?.guide,
+            },
+            400,
+          )
         }
       },
     })
@@ -218,6 +253,8 @@ export function apply(ctx, config = {}) {
     })
     return json(entry)
   })
+
+  route('/api/share-link/status', ['GET'], async () => json(await manager.status()))
 
   route('/api/share-link/list', ['GET'], async () => json({ items: manager.list() }))
 

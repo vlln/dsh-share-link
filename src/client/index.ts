@@ -121,6 +121,25 @@ a[data-dsh-share-btn] { text-decoration: none; }
 }
 [data-dsh-share-actions] button:disabled { opacity: .55; cursor: default; }
 [data-dsh-share-error] { color: #d64545; font-size: 12.5px; margin-top: 10px; white-space: pre-wrap; }
+[data-dsh-share-guide] {
+  margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-secondary, #e3e3ea);
+  background: var(--dsw-alias-bg-base, #f7f7fa);
+}
+[data-dsh-share-guide] strong { display: block; font-size: 13px; margin-bottom: 4px; }
+[data-dsh-share-guide] p { margin: 0 0 10px; font-size: 12.5px; color: var(--dsw-alias-text-secondary, #5f5f6b); }
+[data-dsh-share-guide] .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+[data-dsh-share-guide] a[data-dsh-share-btn] {
+  border: 1px solid var(--dsw-alias-border-secondary, #e3e3ea);
+  color: var(--dsw-alias-brand, #4d6bfe);
+}
+[data-dsh-share-guide] code {
+  flex: 1; min-width: 0; white-space: pre-wrap; word-break: break-all;
+  font: 11.5px/1.9 ui-monospace, Menlo, monospace;
+  background: var(--dsw-alias-bg-elevated, #fff); padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-secondary, #e3e3ea);
+}
+[data-dsh-share-warn] { color: #b7791f; font-size: 12.5px; margin-top: 10px; }
 [data-dsh-share-ok] { color: #2f9e6b; font-size: 12.5px; margin-top: 10px; }
 `
 
@@ -140,8 +159,101 @@ async function post(path, body) {
     body: JSON.stringify(body),
   })
   const payload = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`)
+  if (!response.ok) {
+    const failure = new Error(payload.error ?? `HTTP ${response.status}`)
+    failure.guide = payload.guide
+    failure.code = payload.code
+    throw failure
+  }
   return payload
+}
+
+/** 引导文案按 code 本地化：宿主只提供动作数据（href / command），文案归客户端。 */
+const GUIDE_COPY: Record<string, { zh: { title: string; body: string; linkText: string }; en: { title: string; body: string; linkText: string } }> = {
+  surgeLogin: {
+    zh: {
+      title: '需要先登录 Surge',
+      body: 'Surge 用邮箱注册（免费），在终端登录一次即可；插件会复用本机的登录状态。',
+      linkText: '打开 surge.sh 注册 / 登录',
+    },
+    en: {
+      title: 'Sign in to Surge first',
+      body: 'Surge accounts are free and email-based. Sign in once in your terminal; the plugin reuses that session.',
+      linkText: 'Open surge.sh',
+    },
+  },
+  surgeMissing: {
+    zh: { title: '没有找到 surge 命令', body: '本机还没装 Surge CLI。装好并登录后，分享会自动走你自己的账号。', linkText: 'surge.sh' },
+    en: { title: 'surge CLI not found', body: 'Install the Surge CLI and sign in once; shares will then use your own account.', linkText: 'surge.sh' },
+  },
+  cfHostname: {
+    zh: {
+      title: '命名隧道缺少域名',
+      body: '配置了 tunnelToken，但没说对外用哪个域名。先在 Cloudflare 建隧道并把域名指到本机 3089 端口，再回来填 tunnelHostname。',
+      linkText: '打开 Cloudflare Zero Trust',
+    },
+    en: {
+      title: 'Named tunnel has no hostname',
+      body: 'A tunnel token is configured but no public hostname. Create the tunnel in Cloudflare, point it at localhost:3089, then set tunnelHostname.',
+      linkText: 'Open Cloudflare Zero Trust',
+    },
+  },
+  cfDownload: {
+    zh: { title: 'cloudflared 不可用', body: '公网链接需要一个 cloudflared 可执行文件：可以自动下载，也可以自己装一个再填 cloudflaredPath。', linkText: '下载 cloudflared' },
+    en: { title: 'cloudflared unavailable', body: 'A public link needs the cloudflared binary. It can be downloaded automatically, or install one and set cloudflaredPath.', linkText: 'Download cloudflared' },
+  },
+}
+
+/** @returns {'zh' | 'en'} */
+function uiLanguage() {
+  return (document.documentElement.lang || 'en').toLowerCase().startsWith('zh') ? 'zh' : 'en'
+}
+
+/**
+ * 引导面板：通道没就绪、或发布失败时给出「去登录 / 去配置」的可点入口，
+ * 并附一条可复制的命令。链接一律 target=_blank，不打断当前会话。
+ */
+function GuidePanel(props) {
+  const { guide, t } = props
+  if (guide === null || guide === undefined) return null
+  const tr = (key, fallback) => (typeof t === 'function' ? t(key) : fallback)
+  const copyFor = GUIDE_COPY[guide.code]?.[uiLanguage()]
+  const title = copyFor?.title ?? guide.title
+  const body = copyFor?.body ?? guide.body
+  const linkText = copyFor?.linkText ?? guide.linkText
+  const [copied, setCopied] = React.useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(guide.command)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* 手动选中即可 */
+    }
+  }
+  return h(
+    'div',
+    { 'data-dsh-share-guide': true },
+    h('strong', null, title),
+    body === undefined ? null : h('p', null, body),
+    h(
+      'div',
+      { className: 'row' },
+      guide.href === undefined
+        ? null
+        : h(
+            'a',
+            { 'data-dsh-share-btn': true, href: guide.href, target: '_blank', rel: 'noreferrer' },
+            linkText ?? tr('guide.open', 'Open'),
+          ),
+      guide.command === undefined || guide.command === null
+        ? null
+        : h('code', null, guide.command),
+      guide.command === undefined || guide.command === null
+        ? null
+        : h('button', { 'data-dsh-share-btn': true, onClick: copy, type: 'button' }, copied ? tr('copied', 'Copied') : tr('copy', 'Copy')),
+    ),
+  )
 }
 
 /** 表单/结果共用的分享对话框。 */
@@ -154,6 +266,8 @@ function ShareDialog(props) {
   const [withTools, setWithTools] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
   const [revoked, setRevoked] = React.useState(false)
+  const [status, setStatus] = React.useState(null)
+  const [guide, setGuide] = React.useState(null)
 
   const submit = async () => {
     setBusy(true)
@@ -166,6 +280,7 @@ function ShareDialog(props) {
       setEntry(created)
     } catch (failure) {
       setError(String(failure?.message ?? failure))
+      setGuide(failure?.guide ?? null)
     } finally {
       setBusy(false)
     }
@@ -196,9 +311,20 @@ function ShareDialog(props) {
 
   React.useEffect(() => {
     ensureStyle()
+    let alive = true
+    fetch('/api/share-link/status')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((value) => {
+        if (alive && value !== null) setStatus(value)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
   }, [])
 
   const target = typeof absolutePath === 'string' && absolutePath !== '' ? absolutePath : null
+  const blocked = status !== null && status.ready === false
   const expires =
     entry !== null
       ? new Date(entry.expiresAt).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
@@ -223,6 +349,9 @@ function ShareDialog(props) {
           ? tr('hint.session', 'Creates a read-only snapshot link. The recipient needs no dsh install and cannot see your other sessions. Revoking kills it instantly.')
           : tr('hint.file', 'Publishes this file as a read-only link. Revoking kills it instantly.'),
       ),
+      status !== null && status.ready === false && entry === null
+        ? h(GuidePanel, { guide: status.guide, t })
+        : null,
       target === null && entry === null
         ? h(
             'div',
@@ -254,12 +383,16 @@ function ShareDialog(props) {
             h('button', { 'data-dsh-share-btn': true, onClick: copy, type: 'button' }, copied ? tr('copied', 'Copied') : tr('copy', 'Copy')),
             h('a', { 'data-dsh-share-btn': true, href: entry.url, target: '_blank', rel: 'noreferrer' }, tr('open', 'Open')),
           ),
-      error === '' ? null : h('div', { 'data-dsh-share-error': true }, error),
+      error === '' || guide !== null ? null : h('div', { 'data-dsh-share-error': true }, error),
+      guide === null ? null : h(GuidePanel, { guide, t }),
       entry === null
         ? null
         : h('div', { 'data-dsh-share-ok': true }, `${tr('ok', 'Link created — ready to send.')} ${tr('expires', 'Expires')} ${expires}`),
       revoked && error === ''
         ? h('div', { 'data-dsh-share-ok': true }, tr('revoked', 'Revoked — the link no longer works.'))
+        : null,
+      entry !== null && entry.degraded === true
+        ? h('div', { 'data-dsh-share-warn': true }, tr('degraded', '公网通道不可用，已降级为局域网链接（仅同一网络可访问）。'))
         : null,
       h(
         'div',
@@ -271,8 +404,8 @@ function ShareDialog(props) {
         entry === null
           ? h(
               'button',
-              { 'data-primary': 'true', disabled: busy, onClick: submit, type: 'button' },
-              busy ? tr('working', 'Creating…') : tr('create', 'Create link'),
+              { 'data-primary': 'true', disabled: busy || blocked, onClick: submit, type: 'button' },
+              busy ? tr('working', 'Creating…') : blocked ? tr('blocked', '先完成上面的配置') : tr('create', 'Create link'),
             )
           : null,
       ),
@@ -383,6 +516,8 @@ const zh = {
   revoke: '撤销',
   revoked: '已撤销，链接立即失效。',
   expires: '到期',
+  'guide.open': '打开',
+  blocked: '先完成上面的配置',
 }
 
 const en = {
@@ -402,6 +537,8 @@ const en = {
   revoke: 'Revoke',
   revoked: 'Revoked — the link no longer works.',
   expires: 'Expires',
+  'guide.open': 'Open',
+  blocked: 'Finish the setup above first',
 }
 
 export default {

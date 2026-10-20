@@ -51,6 +51,18 @@ dsh plugin --profile web add @vlln/dsh-share-link
 
 生成后对话框里直接有 `Copy` / `Open` / `Revoke`：撤销是即时生效的（本地目录删掉 → 同一个 URL 立刻 404），不用去翻命令行。
 
+## 没有账号 / 没配置时怎么办
+
+分享框打开时会先问一次通道状态（`GET /api/share-link/status`）。**没就绪就直接给引导**，而不是让你点了才失败：
+
+![通道未就绪时的引导](docs/preview-guide.png)
+
+- 标题 + 一句解释 + **可点的官方入口**（`surge.sh` / Cloudflare Zero Trust / cloudflared 下载页）；
+- 一条可复制的命令（`npm i -g surge && surge login`）；
+- 未就绪时「创建链接」按钮会禁用并改成「先完成上面的配置」，不会让你白点一次；
+- 真失败了（比如 token 过期）也落到同一个引导面板，原文错误不再糊在红字里；
+- 公网隧道挂了会**明确降级**：链接变成局域网地址，并在结果里标出来。
+
 ## 能力面
 
 | 工具 | 说明 |

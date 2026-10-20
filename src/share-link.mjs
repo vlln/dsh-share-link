@@ -208,6 +208,69 @@ export function lanAddress(port) {
   return `http://127.0.0.1:${port}`
 }
 
+/** 带引导信息的分享错误：client 半按 `guide` 渲染"去登录 / 去配置"入口。 */
+export class ShareError extends Error {
+  /**
+   * @param {string} code
+   * @param {string} message
+   * @param {object} [guide]
+   */
+  constructor(code, message, guide) {
+    super(message)
+    this.name = 'ShareError'
+    this.code = code
+    this.guide = guide
+  }
+}
+
+/** 各通道缺配置时的引导文案。链接都指向官方入口，命令可直接复制。 */
+export const GUIDES = {
+  surgeLogin: {
+    code: 'surgeLogin',
+    title: '需要先登录 Surge',
+    body: 'Surge 用邮箱注册（免费），登录一次即可。本插件会复用本机的 Surge 登录状态。',
+    href: 'https://surge.sh/',
+    linkText: '打开 surge.sh 注册 / 登录',
+    command: 'npm i -g surge && surge login',
+  },
+  surgeMissing: {
+    code: 'surgeMissing',
+    title: '没有找到 surge 命令',
+    body: '本机没有装 Surge CLI。装好并登录后，分享会自动走你的账号。',
+    href: 'https://surge.sh/',
+    linkText: 'surge.sh',
+    command: 'npm i -g surge',
+  },
+  cfHostname: {
+    code: 'cfHostname',
+    title: '命名隧道缺少域名',
+    body: '配置了 tunnelToken，但没告诉插件对外用哪个域名。先在 Cloudflare 建一条隧道并把域名指到本机 3089 端口，再回来填 tunnelHostname。',
+    href: 'https://one.dash.cloudflare.com/',
+    linkText: '打开 Cloudflare Zero Trust',
+    command: null,
+  },
+  cfDownload: {
+    code: 'cfDownload',
+    title: 'cloudflared 不可用',
+    body: '公网链接需要一个 cloudflared 可执行文件。可以自动下载，也可以自己装一个然后填 cloudflaredPath。',
+    href: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/',
+    linkText: '下载 cloudflared',
+    command: 'brew install cloudflared',
+  },
+}
+
+/**
+ * 本机是否有 Surge 的登录态。Surge 把凭据写在 `~/.netrc` 的 `machine surge.sh` 段。
+ * @returns {boolean}
+ */
+function hasSurgeCredentials() {
+  try {
+    return readFileSync(join(homedir(), '.netrc'), 'utf8').includes('surge.sh')
+  } catch {
+    return false
+  }
+}
+
 export class ShareManager {
   /**
    * @param {object} options
@@ -291,6 +354,36 @@ export class ShareManager {
       }
     }
     if (dirty) this.#writeIndex(index)
+  }
+
+  /**
+   * 通道就绪情况：client 半在打开分享框时就查这个，未就绪直接给引导，而不是等失败。
+   * @returns {Promise<{provider: string, ready: boolean, guide?: object, detail: string}>}
+   */
+  async status() {
+    const provider = this.config.provider ?? 'tunnel'
+    if (provider === 'surge') {
+      const binary = await whichTool('surge')
+      if (binary === undefined) {
+        return { provider, ready: false, guide: GUIDES.surgeMissing, detail: '没有 surge 可执行文件' }
+      }
+      const authenticated = typeof this.config.surgeToken === 'string' && this.config.surgeToken !== ''
+        ? true
+        : hasSurgeCredentials()
+      return authenticated
+        ? { provider, ready: true, detail: 'surge 已登录' }
+        : { provider, ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
+    }
+    if (provider === 'tunnel') {
+      if (typeof this.config.tunnelToken === 'string' && this.config.tunnelToken !== '') {
+        if (typeof this.config.tunnelHostname !== 'string' || this.config.tunnelHostname === '') {
+          return { provider, ready: false, guide: GUIDES.cfHostname, detail: '命名隧道缺 tunnelHostname' }
+        }
+        return { provider, ready: true, detail: `命名隧道 ${this.config.tunnelHostname}` }
+      }
+      return { provider, ready: true, detail: '快速隧道（首次会自动下载 cloudflared）' }
+    }
+    return { provider: 'lan', ready: true, detail: '仅局域网' }
   }
 
   list() {
@@ -474,6 +567,8 @@ export class ShareManager {
     let origin
     let provider
     let domain
+    let degraded = false
+    let degradedReason
     if (requested === 'surge') {
       const deployed = await this.#deploySurge(dir, `${this.config.surgePrefix ?? 'dsh-share'}-${id.slice(0, 8)}`)
       origin = deployed.url
@@ -483,6 +578,10 @@ export class ShareManager {
       await this.#ensureOrigin()
       origin = this.origin
       provider = this.tunnelOrigin === null ? 'lan' : 'tunnel'
+      if (provider === 'lan' && this.degradedReason !== undefined) {
+        degraded = true
+        degradedReason = this.degradedReason
+      }
     }
 
     const createdAt = Date.now()
@@ -495,6 +594,8 @@ export class ShareManager {
       provider,
       domain,
       origin,
+      degraded: degraded || undefined,
+      degradedReason,
       entry: input.entry ?? 'index.html',
       source: input.source,
       files: input.files ?? 1,
@@ -530,7 +631,18 @@ export class ShareManager {
       typeof this.config.surgeDomain === 'string' && this.config.surgeDomain !== ''
         ? `${slug}.${this.config.surgeDomain}`
         : `${slug}.surge.sh`
-    await runTool('surge', [dir, domain], this.#toolEnv())
+    try {
+      await runTool('surge', [dir, domain], this.#toolEnv())
+    } catch (error) {
+      const text = String(error?.message ?? error)
+      if (/not logged in|login required|unauthor|forbidden|401|403/i.test(text)) {
+        throw new ShareError('surge-login', `Surge 没有登录：${text}`, GUIDES.surgeLogin)
+      }
+      if (/ENOENT|not found/i.test(text)) {
+        throw new ShareError('surge-missing', `找不到 surge 命令：${text}`, GUIDES.surgeMissing)
+      }
+      throw new ShareError('surge-failed', text, GUIDES.surgeLogin)
+    }
     return { domain, url: `https://${domain}` }
   }
 
@@ -579,6 +691,7 @@ export class ShareManager {
     }).catch((error) => {
       child.kill('SIGTERM')
       this.tunnel = null
+      this.degradedReason = String(error?.message ?? error)
       this.ctx.logger?.warn?.(`[share-link] 隧道启动失败，降级为局域网链接：${String(error)}`)
       return null
     })
@@ -714,7 +827,7 @@ async function downloadCloudflared(binDir) {
  * @returns {Promise<string>} 合并后的 stdout + stderr。
  */
 export function runTool(name, args, env) {
-  return which(name).then((binary) => new Promise((resolvePromise, reject) => {
+  return whichTool(name).then((binary) => new Promise((resolvePromise, reject) => {
     const argv = binary === undefined ? ['--yes', name, ...args] : args
     const child = spawn(binary ?? 'npx', argv, { env, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
@@ -737,7 +850,7 @@ export function runTool(name, args, env) {
  * @param {string} name
  * @returns {Promise<string|undefined>}
  */
-async function which(name) {
+async function whichTool(name) {
   for (const dir of (process.env.PATH ?? '').split(':')) {
     if (dir === '') continue
     const candidate = join(dir, name)
