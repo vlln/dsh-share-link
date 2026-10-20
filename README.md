@@ -45,13 +45,9 @@ dsh 跑在本机，产物却经常要给外面的人看：一段对话要发给�
 
 ## 用起来是什么样
 
-<!-- 内联视频：GitHub 只认网页上传后的 user-attachments 链接（写法见 vlln/obsidian-harness）。
-     把上传返回的那行 https://github.com/user-attachments/assets/... 粘在下面，然后删掉封面那一行。 -->
-<!-- VIDEO -->
+https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
-[![26 秒演示：从会话菜单分享到打开只读页](docs/demo-poster.jpg)](docs/demo.mp4)
-
-<sub>▶ 点封面播放 26 秒录屏（`docs/demo.mp4`，914 KB）</sub>
+<sub>26 秒：从 `···` 分享会话 → 生成链接 → 打开发布页。想存原画：[docs/demo.mp4](docs/demo.mp4)（914 KB）</sub>
 
 ### 分享会话
 
