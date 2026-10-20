@@ -186,6 +186,16 @@ function walkFiles(root, dir, acc = []) {
   return acc
 }
 
+/**
+ * 一条分享的对外 URL。Surge 把整个目录部署成域名根；隧道/局域网走 `/s/<id>/`。
+ * @param {{provider?: string, origin: string, id: string, entry?: string}} entry
+ * @returns {string}
+ */
+export function urlOf(entry) {
+  const suffix = entry.entry === undefined || entry.entry === 'index.html' ? '' : entry.entry
+  return entry.provider === 'surge' ? `${entry.origin}/${suffix}` : `${entry.origin}/s/${entry.id}/${suffix}`
+}
+
 /** 递归统计目录体积与文件数。 */
 function measure(target, acc = { bytes: 0, files: 0 }) {
   const info = statSync(target)
@@ -388,7 +398,9 @@ export class ShareManager {
 
   list() {
     this.sweep()
-    return Object.values(this.#readIndex()).sort((a, b) => b.createdAt - a.createdAt)
+    return Object.values(this.#readIndex())
+      .map((entry) => ({ ...entry, url: urlOf(entry) }))
+      .sort((a, b) => b.createdAt - a.createdAt)
   }
 
   async revoke(id) {
@@ -603,10 +615,7 @@ export class ShareManager {
     const index = this.#readIndex()
     index[id] = entry
     this.#writeIndex(index)
-    // Surge 把整个分享目录部署成域名根；隧道/局域网的分享服务按 token 路径区分。
-    const suffix = entry.entry === 'index.html' ? '' : entry.entry
-    const url = provider === 'surge' ? `${entry.origin}/${suffix}` : `${entry.origin}/s/${id}/${suffix}`
-    return { ...entry, url }
+    return { ...entry, url: urlOf(entry) }
   }
 
   /** 外部发布工具的进程环境（Surge token 从配置注入，不落盘）。 */

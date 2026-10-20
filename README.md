@@ -51,6 +51,17 @@ dsh plugin --profile web add @vlln/dsh-share-link
 
 生成后对话框里直接有 `Copy` / `Open` / `Revoke`：撤销是即时生效的（本地目录删掉 → 同一个 URL 立刻 404），不用去翻命令行。
 
+## 配置与管理：侧边栏 Plugins → Share Link
+
+发布渠道、渠道参数、已发布的链接都在一个地方：
+
+![设置卡：渠道、参数与已发布链接](docs/preview-settings.png)
+
+- **四种渠道**一键切换：快速隧道 / 命名隧道 / Surge / 仅局域网；切换只改 `provider`，参数各填各的。
+- 字段是**即时写入**的（失焦或回车即生效，没有"保存"按钮），值落在 profile patch 的 `config:` 里。
+- **已发布链接**列出每条的类型、URL（可点开）和撤销按钮；撤销后服务端立即 404。
+- 这些字段都标了 volatile：改完**不用重启 `dsh web`**，下一次分享就按新配置走。
+
 ## 没有账号 / 没配置时怎么办
 
 分享框打开时会先问一次通道状态（`GET /api/share-link/status`）。**没就绪就直接给引导**，而不是让你点了才失败：
@@ -71,6 +82,8 @@ dsh plugin --profile web add @vlln/dsh-share-link
 | `share_artifact` | 发布本地文件或目录；目录需含 `index.html`，单个 `.html` 挂在链接根路径 |
 | `share_list` | 列出活跃链接、类型、到期时间 |
 | `share_revoke` | 按 id 撤销，链接立即失效、快照文件从磁盘删除 |
+
+配置也可以在 **Plugins → Share Link** 里改（推荐，即时生效）；下面是同一套字段：
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |

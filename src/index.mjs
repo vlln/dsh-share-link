@@ -21,20 +21,54 @@ export const name = 'dsh-share-link'
 export const inject = ['tools', 'sessionQuery', 'connection']
 
 /** 配置项。`port` 传 0 表示随机端口（推荐，避免与宿主端口冲突）。 */
+/** 配置默认值（设置卡与运行时共用同一份，避免两处漂移）。 */
+export const DEFAULTS = Object.freeze({
+  provider: 'tunnel',
+  port: 0,
+  ttlHours: 168,
+  cloudflaredPath: '',
+  tunnelToken: '',
+  tunnelHostname: '',
+  surgeLogin: '',
+  surgeToken: '',
+  surgeDomain: '',
+  surgePrefix: 'dsh-share',
+})
+
 export const Config = Schema.object({
   provider: Schema.union(['tunnel', 'lan', 'surge'])
-    .default('tunnel')
+    .default(DEFAULTS.provider)
+    .volatile()
     .description('tunnel = 公网 cloudflared（可撤销）；lan = 仅同局域网；surge = Surge 持久域名（可 teardown）'),
-  port: Schema.natural().default(0).description('只读分享服务端口，0 = 随机（命名隧道模式下自动用 3089）'),
-  ttlHours: Schema.natural().min(1).max(720).default(168).description('分享链接默认有效期（小时）'),
-  cloudflaredPath: Schema.string().description('已有 cloudflared 可执行文件路径；留空则自动查找/下载'),
-  tunnelToken: Schema.string().description('Cloudflare 命名隧道的 token；填了就产出固定域名链接'),
-  tunnelHostname: Schema.string().description('命名隧道绑定的域名，例如 share.example.com'),
-  surgeLogin: Schema.string().description('Surge 账号邮箱；配合 surgeToken 免交互登录'),
-  surgeToken: Schema.string().description('Surge token（`surge tokens add`）；只注入给子进程，不落盘'),
-  surgeDomain: Schema.string().description('Surge 域名后缀，例如 example.com；留空用 slug.surge.sh'),
-  surgePrefix: Schema.string().default('dsh-share').description('Surge 子域前缀，最终域名是 <prefix>-<id>.surge.sh'),
+  port: Schema.natural().default(DEFAULTS.port).volatile().description('只读分享服务端口，0 = 随机（命名隧道模式下自动用 3089）'),
+  ttlHours: Schema.natural().min(1).max(720).default(DEFAULTS.ttlHours).volatile().description('分享链接默认有效期（小时）'),
+  cloudflaredPath: Schema.string().default(DEFAULTS.cloudflaredPath).volatile().description('已有 cloudflared 可执行文件路径；留空则自动查找/下载'),
+  tunnelToken: Schema.string().default(DEFAULTS.tunnelToken).volatile().description('Cloudflare 命名隧道的 token；填了就产出固定域名链接'),
+  tunnelHostname: Schema.string().default(DEFAULTS.tunnelHostname).volatile().description('命名隧道绑定的域名，例如 share.example.com'),
+  surgeLogin: Schema.string().default(DEFAULTS.surgeLogin).volatile().description('Surge 账号邮箱；配合 surgeToken 免交互登录'),
+  surgeToken: Schema.string().default(DEFAULTS.surgeToken).volatile().description('Surge token（`surge tokens add`）；只注入给子进程，不落盘'),
+  surgeDomain: Schema.string().default(DEFAULTS.surgeDomain).volatile().description('Surge 域名后缀，例如 example.com；留空用 slug.surge.sh'),
+  surgePrefix: Schema.string().default(DEFAULTS.surgePrefix).volatile().description('Surge 子域前缀，最终域名是 <prefix>-<id>.surge.sh'),
 })
+
+/**
+ * 解引用 volatile 叶并补默认值。volatile 叶在运行时是 `{ get() }` 包装，
+ * 每次要用就重读——别缓存引用本身。
+ * @param {any} raw
+ */
+export function readConfig(raw) {
+  const unwrap = (value) => {
+    if (value !== null && typeof value === 'object' && typeof value.get === 'function' && Object.keys(value).length === 1) {
+      return unwrap(value.get())
+    }
+    if (Array.isArray(value)) return value.map(unwrap)
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unwrap(item)]))
+    }
+    return value
+  }
+  return { ...DEFAULTS, ...unwrap(raw ?? {}) }
+}
 
 /** 通道的中文说法，用于工具回复。 */
 const CHANNEL_LABEL = {
@@ -84,7 +118,18 @@ function describeShare(entry) {
  * @param {any} [config]
  */
 export function apply(ctx, config = {}) {
-  const manager = new ShareManager({ ctx, config })
+  let liveConfig = readConfig(config)
+  const manager = new ShareManager({ ctx, config: liveConfig })
+
+  // 设置卡写的是 volatile 叶：值原地生效，这里把快照换成新值，不重挂载插件。
+  ctx.effect(
+    () =>
+      ctx.on('loader/volatile-update', () => {
+        liveConfig = readConfig(config)
+        manager.config = liveConfig
+      }),
+    'share-link: live config',
+  )
 
   ctx.effect(
     () => {

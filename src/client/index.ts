@@ -9,6 +9,8 @@
 // 不依赖任何私有 client 服务：只读写宿主 slots / locale，网络走宿主同源路由。
 import React from 'react'
 
+import { registerSettingsCard } from './settings-card'
+
 const h = React.createElement
 
 /** 菜单项与 header 图标之间的桥：谁先拿到点击，都由它把对话框叫起来。 */
@@ -543,10 +545,11 @@ const en = {
 
 export default {
   name: 'dsh-share-link-client',
-  inject: ['locale', 'slots'],
+  inject: ['locale', 'slots', 'configForms'],
   apply(ctx) {
     ctx.locale.register('share-link', { zh, en })
     ctx.effect(() => installMenuIntegration(), 'share-link: session menu item')
+    ctx.effect(() => registerSettingsCard(ctx), 'share-link: settings card')
 
     // 右上角：与会话日志「···」菜单同排，作为独立的分享图标。
     ctx.slots.inject('conversation.session.header.utilities', () =>
