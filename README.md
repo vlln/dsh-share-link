@@ -1,6 +1,6 @@
-# dsh-share-link
+<h1 align="center">dsh-share-link</h1>
 
-<p align="center">把一段对话或一个产物，发布成只读的公网链接——对方点开就能看，撤销后立即失效。</p>
+<p align="center"><b>把一段对话或一个产物，发布成只读的公网链接</b><br>对方点开就能看，撤销后立即失效。</p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@vlln/dsh-share-link"><img alt="npm" src="https://img.shields.io/npm/v/@vlln/dsh-share-link?color=4d6bfe"></a>
@@ -45,9 +45,9 @@ dsh 跑在本机，产物却经常要给外面的人看：一段对话要发给�
 
 ## 用起来是什么样
 
-![录屏：从会话菜单分享，到对方打开只读页面](docs/demo.gif)
+[![26 秒演示：从会话菜单分享到打开只读页](docs/demo-poster.jpg)](docs/demo.mp4)
 
-<sub>完整 26 秒（含切换通道与打开发布页）：[docs/demo.mp4](docs/demo.mp4)</sub>
+<sub>▶ 点封面播放 26 秒录屏（`docs/demo.mp4`，914 KB；GitHub 在文件页内嵌播放器）</sub>
 
 ### 分享会话
 
