@@ -31,15 +31,35 @@ function channelOf(cfg) {
   return cfg.tunnelMode === 'named' ? 'named' : 'quick'
 }
 
-/** 渠道相关的字段（端口与有效期对所有渠道通用）。 */
-const CHANNEL_FIELDS = {
-  quick: [],
-  named: ['tunnelToken', 'tunnelHostname'],
-  surge: ['surgeLogin', 'surgeToken', 'surgeDomain'],
-  lan: [],
+/** 每个渠道的说明、步骤、入口链接与需要的字段——普通用户只看这里。 */
+const CHANNEL_INFO = {
+  quick: {
+    name: (t) => t('channel.quick'),
+    desc: (t) => t('channel.quick.desc'),
+    fields: [],
+    steps: () => [],
+  },
+  surge: {
+    name: (t) => t('channel.surge'),
+    desc: (t) => t('channel.surge.desc'),
+    fields: ['surgeLogin', 'surgeToken'],
+    steps: (t) => [t('step.surge.1'), t('step.surge.2')],
+    link: { href: 'https://surge.sh/', text: (t) => t('link.surge') },
+  },
+  named: {
+    name: (t) => t('channel.named'),
+    desc: (t) => t('channel.named.desc'),
+    fields: ['tunnelToken', 'tunnelHostname'],
+    steps: (t) => [t('step.named.1'), t('step.named.2'), t('step.named.3')],
+    link: { href: 'https://one.dash.cloudflare.com/', text: (t) => t('link.cf') },
+  },
+  lan: {
+    name: (t) => t('channel.lan'),
+    desc: (t) => t('channel.lan.desc'),
+    fields: [],
+    steps: () => [],
+  },
 }
-
-const COMMON_FIELDS = ['port', 'ttlHours']
 
 const FIELD_SPEC = {
   port: { kind: 'number', secret: false },
@@ -181,11 +201,28 @@ export function SettingsCard(props) {
   const t = props.t
   const [resetToken, setResetToken] = React.useState(0)
   const [failed, setFailed] = React.useState('')
+  const [advanced, setAdvanced] = React.useState(false)
+  const [status, setStatus] = React.useState(null)
+  const channel = channelOf(state.value ?? {})
+
+  // 钩子必须先于任何提前 return（view 分支 / 未就绪），否则切视图时钩子顺序会变。
+  React.useEffect(() => {
+    let alive = true
+    fetch('/api/share-link/status')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((value) => {
+        if (alive && value !== null) setStatus(value)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [channel])
+
   if (props.view === 'summary') return t('summary')
   if (!state.available) return null
-
   const disabled = state.writable === false
-  const channel = channelOf(state.value)
+
   const commit = (path, value) => {
     setFailed('')
     Promise.resolve(props.write(path, value)).catch((failure) => {
@@ -200,16 +237,46 @@ export function SettingsCard(props) {
     if (target.id === 'quick' || target.id === 'named') commit('tunnelMode', target.id)
   }
 
-  const active = CHANNELS.find((item) => item.id === channel)
-  const fields = [...CHANNEL_FIELDS[channel], ...COMMON_FIELDS]
+  const info = CHANNEL_INFO[channel]
+  const steps = info.steps === undefined ? [] : info.steps(t)
+  const field = (key) =>
+    el(Field, {
+      key,
+      fieldKey: key,
+      value: state.value[key],
+      disabled,
+      secret: FIELD_SPEC[key].secret,
+      numeric: FIELD_SPEC[key].kind === 'number',
+      t,
+      resetToken,
+      onCommit: (name, value) => commit(name, value),
+    })
 
   return el(
     'div',
     { 'data-dsh-share-link-settings': '', style: { display: 'flex', flexDirection: 'column' } },
-    disabled ? el('p', { role: 'status', style: { margin: '0 0 8px', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('readOnly')) : null,
 
-    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '4px 0 2px' } }, t('channel.title')),
-    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 8 } }, t('channel.hint')),
+    // ---- 就绪状态：先告诉用户"现在能不能分享"
+    status === null
+      ? null
+      : el(
+          'div',
+          {
+            'data-share-status': status.ready ? 'ready' : 'blocked',
+            style: {
+              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10,
+              fontSize: 12.5, marginBottom: 16,
+              background: status.ready ? 'rgba(31,157,99,.08)' : 'rgba(183,121,31,.10)',
+              color: status.ready ? '#1f9d63' : '#96631a',
+            },
+          },
+          el('span', { style: { width: 7, height: 7, borderRadius: 999, background: 'currentColor', flex: 'none' } }),
+          el('span', null, status.ready ? `${t('ready')} · ${info.name(t)}` : `${t('notReady')} · ${status.detail}`),
+        ),
+
+    // ---- 渠道选择
+    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '0 0 2px' } }, t('channel.title')),
+    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 10 } }, t('channel.hint')),
     el(
       'div',
       { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
@@ -222,38 +289,87 @@ export function SettingsCard(props) {
           'data-active': item.id === channel ? 'true' : 'false',
           onClick: () => pickChannel(item.id),
           style: {
-            height: 28, padding: '0 12px', fontSize: 12.5, borderRadius: 8, cursor: 'pointer',
-            border: '0.5px solid var(--dsw-alias-border-l2)',
+            position: 'relative', height: 32, padding: '0 12px', fontSize: 12.5, borderRadius: 9, cursor: 'pointer',
+            border: item.id === channel ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '0.5px solid var(--dsw-alias-border-l2)',
             background: item.id === channel ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
             color: item.id === channel ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
-            fontWeight: item.id === channel ? 500 : 400,
+            fontWeight: item.id === channel ? 600 : 400,
           },
-        }, t(item.labelKey)),
+        }, item.labelKey === 'channel.quick' ? `${t(item.labelKey)} · ${t('recommended')}` : t(item.labelKey)),
       ),
     ),
-    active === undefined
-      ? null
-      : el('p', { style: { margin: '8px 0 4px', fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' } }, t(active.hintKey)),
 
-    el('div', { style: { display: 'flex', flexDirection: 'column', marginTop: 6 } },
-      fields.map((key) =>
-        el(Field, {
-          key,
-          fieldKey: key,
-          value: state.value[key],
-          disabled,
-          secret: FIELD_SPEC[key].secret,
-          numeric: FIELD_SPEC[key].kind === 'number',
-          t,
-          resetToken,
-          onCommit: (field, value) => commit(field, value),
-        }),
-      ),
+    // ---- 选中渠道：一句话说明 + 步骤 + 入口链接
+    el(
+      'div',
+      {
+        'data-share-guide-card': channel,
+        style: {
+          marginTop: 12, padding: '14px 16px', borderRadius: 12,
+          border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)',
+        },
+      },
+      el('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } }, info.name(t)),
+      el('div', { style: { fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, info.desc(t)),
+      steps.length === 0
+        ? null
+        : el(
+            'ol',
+            { style: { margin: '10px 0 0', paddingLeft: 18, fontSize: 12.5, lineHeight: 1.9, color: 'var(--dsw-alias-label-secondary)' } },
+            steps.map((step, index) => el('li', { key: index }, step)),
+          ),
+      info.link === undefined
+        ? null
+        : el(
+            'div',
+            { style: { marginTop: 10 } },
+            el('a', {
+              href: info.link.href,
+              target: '_blank',
+              rel: 'noreferrer',
+              'data-share-outbound': info.link.href,
+              style: {
+                display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, padding: '0 11px',
+                borderRadius: 8, fontSize: 12.5, textDecoration: 'none',
+                color: 'var(--dsw-alias-brand, #4d6bfe)',
+                border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
+              },
+            }, info.link.text(t), ' ↗'),
+          ),
+      // 需要的字段直接放在说明卡里，填完就是配好了
+      info.fields.length === 0
+        ? null
+        : el('div', { style: { display: 'flex', flexDirection: 'column', marginTop: 10 } }, info.fields.map(field)),
     ),
 
     failed === '' ? null : el('p', { role: 'status', style: { margin: '10px 0 0', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, t('writeFailed')),
 
-    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '18px 0 0' } }, t('shares.title')),
+    // ---- 高级（默认收起，普通用户不需要碰）
+    el(
+      'button',
+      {
+        type: 'button',
+        'data-share-advanced': 'toggle',
+        onClick: () => setAdvanced((value) => !value),
+        style: {
+          alignSelf: 'flex-start', marginTop: 14, height: 26, padding: '0 8px', borderRadius: 7,
+          border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)',
+          fontSize: 12, cursor: 'pointer',
+        },
+      },
+      `${advanced ? '▾' : '▸'} ${t('advanced')}`,
+    ),
+    advanced
+      ? el(
+          'div',
+          { style: { marginTop: 6, padding: '4px 0 0 12px', borderLeft: '2px solid var(--dsw-alias-border-l2)' } },
+          el('p', { style: { margin: '0 0 4px', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('advanced.hint')),
+          ['port', 'ttlHours', 'surgeDomain', 'surgePrefix'].map((key) => field(key)),
+        )
+      : null,
+
+    // ---- 已发布
+    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '20px 0 0' } }, t('shares.title')),
     el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('shares.hint')),
     el(SharesPanel, { t }),
   )
@@ -309,18 +425,31 @@ export function registerSettingsCard(ctx) {
 
 export const zh = {
   summary: '发布渠道、参数与已发布的链接',
+  recommended: '推荐',
+  ready: '可以分享',
+  notReady: '还不能分享',
+  advanced: '高级设置',
+  'advanced.hint': '一般不用改：端口、默认有效期、Surge 域名后缀。',
+  'channel.quick.desc': '零配置：dsh 在跑就有链接，重启换域名。适合临时发给别人看一眼。',
+  'channel.surge.desc': '免费账号即可，得到永久固定域名，随时可撤销。',
+  'channel.named.desc': '需要你自己在 Cloudflare 建隧道并绑定域名。没有自有域名请直接选 Surge。',
+  'channel.lan.desc': '只在同一局域网可访问，不出公网。',
+  'step.surge.1': '用邮箱在 surge.sh 注册并登录（免费）',
+  'step.surge.2': '在终端运行 surge login；或把 surge tokens add 生成的 token 填到下面',
+  'link.surge': '打开 surge.sh',
+  'step.named.1': 'Cloudflare Zero Trust → Networks → Tunnels → 创建隧道',
+  'step.named.2': '给隧道加 Public Hostname，指向 localhost:3089',
+  'step.named.3': '把隧道 token 和完整域名填到下面',
+  'link.cf': '打开 Cloudflare Zero Trust',
+  'field.surgePrefix': '子域前缀',
   readOnly: '当前部署只读，无法修改。',
   writeFailed: '刚才的改动未被接受，已回读当前值。',
   'channel.title': '发布渠道',
   'channel.hint': '选一个渠道，填好参数就能在会话右上角或文件预览里直接出链接。',
   'channel.quick': '快速隧道',
-  'channel.quick.hint': 'cloudflared 临时域名，零配置；进程停掉链接即失效，域名每次重启会变。',
   'channel.named': '命名隧道（自有域名）',
-  'channel.named.hint': '「命名隧道」是你在 Cloudflare 上自己创建的一条隧道，配一个固定域名，重启也不变。前提：你有托管在 Cloudflare 的域名。没有域名这条走不通，请用 Surge 或快速隧道。',
   'channel.surge': 'Surge',
-  'channel.surge.hint': '持久域名，可 `surge teardown` 撤销。免费账号即可，域名形如 <prefix>-<id>.surge.sh。',
   'channel.lan': '仅局域网',
-  'channel.lan.hint': '只给同一网络的人看，不出公网。',
   'field.port': '分享服务端口',
   'field.port.hint': '0 = 随机端口；命名隧道模式必须固定（默认 3089）。',
   'field.ttlHours': '默认有效期（小时）',
@@ -347,18 +476,31 @@ export const zh = {
 
 export const en = {
   summary: 'Publishing channels, their settings, and active links',
+  recommended: 'recommended',
+  ready: 'Ready to share',
+  notReady: 'Not ready yet',
+  advanced: 'Advanced',
+  'advanced.hint': 'Usually not needed: port, default lifetime, Surge domain suffix.',
+  'channel.quick.desc': 'Zero config: the link lives as long as dsh runs; the hostname changes on restart. Good for a quick look.',
+  'channel.surge.desc': 'Free account is enough; you get a stable domain that you can revoke any time.',
+  'channel.named.desc': 'Requires a tunnel you create in Cloudflare plus a domain you own. No domain? Pick Surge.',
+  'channel.lan.desc': 'Same network only; nothing leaves your machine.',
+  'step.surge.1': 'Sign up / sign in at surge.sh with an email (free)',
+  'step.surge.2': 'Run `surge login` in a terminal, or paste a `surge tokens add` token below',
+  'link.surge': 'Open surge.sh',
+  'step.named.1': 'Cloudflare Zero Trust → Networks → Tunnels → create a tunnel',
+  'step.named.2': 'Add a Public Hostname pointing at localhost:3089',
+  'step.named.3': 'Paste the tunnel token and the full hostname below',
+  'link.cf': 'Open Cloudflare Zero Trust',
+  'field.surgePrefix': 'Subdomain prefix',
   readOnly: 'This deployment is read-only.',
   writeFailed: 'That change was not accepted; values were re-read.',
   'channel.title': 'Publishing channel',
   'channel.hint': 'Pick one channel and fill in its settings; shares then work from the session menu or a file preview.',
   'channel.quick': 'Quick tunnel',
-  'channel.quick.hint': 'Zero-config cloudflared URL. Dies with the process and the hostname changes on restart.',
   'channel.named': 'Named tunnel (own domain)',
-  'channel.named.hint': 'A named tunnel is one you create yourself in Cloudflare and pin to a stable hostname that survives restarts. It requires a domain hosted on Cloudflare; without one use Surge or a quick tunnel instead.',
   'channel.surge': 'Surge',
-  'channel.surge.hint': 'Persistent domain, revocable with `surge teardown`. Free account is enough; links look like <prefix>-<id>.surge.sh.',
   'channel.lan': 'LAN only',
-  'channel.lan.hint': 'Only reachable on the same network; nothing leaves your machine.',
   'field.port': 'Share server port',
   'field.port.hint': '0 = random. Named tunnels need a fixed port (3089 by default).',
   'field.ttlHours': 'Default lifetime (hours)',
