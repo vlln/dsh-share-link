@@ -78,6 +78,16 @@ const PAGE_CSS = `  :root {
     border: 1px solid var(--line); background: var(--paper);
   }
   .bar .spacer { flex: 1; }
+  .bar [data-copy] { font-size: 12px; }
+
+  button[data-copy] {
+    font: inherit; font-size: 12px; height: 24px; padding: 0 4px; cursor: pointer;
+    border: 0; background: transparent; color: var(--muted);
+    transition: color .15s;
+  }
+  button[data-copy]:hover { color: var(--fg); }
+  button[data-copy][data-done] { color: #1f9d63; }
+  button[data-copy][data-done]::after { content: ' ✓'; }
 
   main { max-width: 720px; margin: 0 auto; padding: 44px 22px 40px; }
 
@@ -89,26 +99,28 @@ const PAGE_CSS = `  :root {
   .meta code { font: 11.5px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); }
   .rule { height: 1px; background: var(--line); margin: 26px 0 30px; border: 0; }
 
-  .turn { margin: 0 0 30px; }
-  .turn .who {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-    color: var(--muted); margin-bottom: 8px;
+  .msg { margin: 0 0 26px; }
+  .msg.user { display: flex; justify-content: flex-end; }
+  .msg.user .bubble {
+    max-width: 78%; padding: 10px 15px; border-radius: 16px 16px 5px 16px;
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+    color: var(--fg); overflow-wrap: anywhere;
   }
-  .turn .who time { font-weight: 400; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
-  .turn.user .who { color: var(--accent); }
-  .turn .body { overflow-wrap: anywhere; }
-  .turn .body > :first-child { margin-top: 0; }
-  .turn .body > :last-child { margin-bottom: 0; }
-
-  /* 用户：左侧色条引文块，不加边框、不加背景块 */
-  .turn.user .body {
-    border-left: 3px solid var(--accent);
-    padding: 2px 0 2px 16px;
-    color: var(--fg); font-weight: 450;
+  .msg.assistant .text { overflow-wrap: anywhere; }
+  .msg .text > :first-child, .msg .bubble > :first-child { margin-top: 0; }
+  .msg .text > :last-child, .msg .bubble > :last-child { margin-bottom: 0; }
+  .msg.assistant .foot {
+    display: flex; align-items: center; gap: 10px; margin-top: 10px;
+    font-size: 11.5px; color: var(--muted);
   }
-  /* 助手：纯正文流 */
-  .turn.assistant .body { color: var(--fg); }
+  .msg.assistant .foot button {
+    border: 0; background: transparent; padding: 0; cursor: pointer;
+    font: inherit; font-size: 11.5px; color: var(--muted);
+    opacity: .55; transition: opacity .15s ease;
+  }
+  .msg.assistant:hover .foot button, .msg.assistant .foot button:focus-visible { opacity: 1; }
+  .msg.assistant .foot button:hover { color: var(--fg); text-decoration: underline; }
+  .msg.assistant .foot button[data-done] { color: #1f9d63; opacity: 1; }
 
   .body p { margin: 0 0 12px; }
   .body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { margin: 22px 0 10px; line-height: 1.4; letter-spacing: -0.01em; }
@@ -126,6 +138,7 @@ const PAGE_CSS = `  :root {
     font: 11px/1.8 ui-monospace, Menlo, monospace; color: var(--muted);
   }
   .code-bar span { flex: 1; }
+  .code-bar button[data-copy] { font-family: inherit; }
   .code pre { margin: 0; padding: 2px 14px 14px; overflow-x: auto; }
   pre code { font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
   :not(pre) > code {
@@ -200,8 +213,6 @@ const THEME_CSS = {
   h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
   .bar { border-bottom: 0; background: #ffffff; }
   .tag { border: 0; background: #f1f0ee; }
-  .turn.user .body { border-left: 0; padding-left: 0; font-weight: 500; }
-  .turn.user .body::before { content: '“'; display: block; font-size: 28px; line-height: 1; color: var(--line); }
   footer { border-top: 0; }`,
   // 散文/阅读：衬线、米色、宽行距
   sepia: `:root {
@@ -213,7 +224,6 @@ const THEME_CSS = {
     font-size: 17px; line-height: 1.95;
   }
   h1 { font-size: 28px; font-weight: 600; letter-spacing: 0; }
-  .turn .who { letter-spacing: .1em; font-family: -apple-system, sans-serif; }
   .bar { background: #f7f0df; border-bottom-color: #ded1b6; }
   .tag { background: #f7f0df; border-color: #ded1b6; }`,
   // 终端：暗色、等宽
@@ -227,7 +237,6 @@ const THEME_CSS = {
     font-size: 14px; line-height: 1.8;
   }
   h1 { font-size: 22px; font-weight: 600; letter-spacing: 0; }
-  .turn .who { text-transform: uppercase; letter-spacing: .12em; }
   .bar { background: #0d1117; border-bottom-color: #21262d; }
   .tag { background: #161b22; border-color: #21262d; }`,
 }
@@ -362,20 +371,22 @@ function renderBlocks(chunk) {
 
 function renderMessage(message) {
   const role = message.role === 'user' ? 'user' : 'assistant'
-  const label = role === 'user' ? '你' : '助手'
-  const tools =
-    role === 'assistant' && Array.isArray(message.tools) && message.tools.length > 0
-      ? `<div class="tools">${message.tools.map((tool) => `<span class="tool">${escapeHtml(tool)}</span>`).join('')}</div>`
-      : ''
   const time =
     typeof message.time === 'number'
       ? `<time>${escapeHtml(new Date(message.time).toISOString().slice(11, 16))}</time>`
       : ''
-  return `<section class="turn ${role}">
-  <div class="who">${label}${time}</div>
-  <div class="body">${renderBody(message.text)}</div>
+  const tools =
+    role === 'assistant' && Array.isArray(message.tools) && message.tools.length > 0
+      ? `<div class="tools">${message.tools.map((tool) => `<span class="tool">${escapeHtml(tool)}</span>`).join('')}</div>`
+      : ''
+  if (role === 'user') {
+    return `<div class="msg user"><div class="bubble">${renderBody(message.text)}</div></div>`
+  }
+  return `<div class="msg assistant">
+  <div class="text">${renderBody(message.text)}</div>
   ${tools}
-</section>`
+  <div class="foot"><button type="button" data-copy="message" aria-label="复制这条">复制</button>${time}</div>
+</div>`
 }
 
 /**
@@ -414,15 +425,13 @@ ${themeCss(theme, customCss)}
 <body>
 <header class="bar">
   <span class="brand">dsh-share-link</span>
-  <span class="tag">只读快照</span>
   <span class="spacer"></span>
   <button type="button" data-copy="content">复制正文</button>
 </header>
 <main>
   <article data-copy-source>
     <h1>${escapeHtml(title)}</h1>
-    <p class="meta">${escapeHtml(stamp)} UTC · ${messages.length} 条消息 · ${redactNote}${fingerprint === '' ? '' : ` · 指纹 ${escapeHtml(fingerprint)}`}</p>
-    <p class="meta">会话 <code>${escapeHtml(sessionId)}</code></p>
+    <p class="meta">${escapeHtml(stamp)} UTC · ${messages.length} 条消息</p>
     <hr class="rule">
     <div class="thread">
 ${body}
@@ -431,7 +440,7 @@ ${body}
   <footer>
     <span>由 <a href="${STAR_URL}" target="_blank" rel="noreferrer">dsh-share-link</a> 生成 · 撤销后立即失效</span>
     <span class="grow"></span>
-    <a class="star" href="${STAR_URL}" target="_blank" rel="noreferrer">★ 在 GitHub 上点个 Star</a>
+    <a class="star" href="${STAR_URL}" target="_blank" rel="noreferrer">喜欢这个插件🌟</a>
   </footer>
 </main>
 ${COPY_SCRIPT}
@@ -466,7 +475,7 @@ ${themeCss(theme, customCss)}
   <footer>
     <span>由 <a href="${STAR_URL}" target="_blank" rel="noreferrer">dsh-share-link</a> 生成的只读快照</span>
     <span class="grow"></span>
-    <a class="star" href="${STAR_URL}" target="_blank" rel="noreferrer">★ 在 GitHub 上点个 Star</a>
+    <a class="star" href="${STAR_URL}" target="_blank" rel="noreferrer">喜欢这个插件🌟</a>
   </footer>
 </main>
 ${COPY_SCRIPT}
@@ -522,7 +531,7 @@ ${rows}
   <footer>
     <span>由 <a href="${STAR_URL}" target="_blank" rel="noreferrer">dsh-share-link</a> 生成</span>
     <span class="grow"></span>
-    <a class="star" href="${STAR_URL}" target="_blank" rel="noreferrer">★ 在 GitHub 上点个 Star</a>
+    <a class="star" href="${STAR_URL}" target="_blank" rel="noreferrer">喜欢这个插件🌟</a>
   </footer>
 </main>
 ${COPY_SCRIPT}

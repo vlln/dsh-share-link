@@ -509,15 +509,26 @@ export function SettingsCard(props) {
 
     failed === '' ? null : el('p', { role: 'status', style: { margin: '10px 0 0', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, t('writeFailed')),
 
-    el('button', {
-      type: 'button',
-      'data-share-advanced': 'toggle',
-      onClick: () => setAdvanced((value) => !value),
-      style: {
-        alignSelf: 'flex-start', marginTop: 14, height: 26, padding: '0 8px', borderRadius: 7,
-        border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, cursor: 'pointer',
+    el(
+      'button',
+      {
+        type: 'button',
+        'data-share-advanced': 'toggle',
+        'data-open': advanced ? 'true' : 'false',
+        onClick: () => setAdvanced((value) => !value),
+        style: {
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%', boxSizing: 'border-box',
+          marginTop: 18, padding: '12px 2px', border: 0, borderTop: '1px solid var(--dsw-alias-border-l2)',
+          background: 'transparent', color: 'var(--dsw-alias-label-primary)', fontSize: 13,
+          fontWeight: 500, cursor: 'pointer', textAlign: 'left',
+        },
       },
-    }, `${advanced ? '▾' : '▸'} ${t('advanced')}`),
+      el('span', null, t('advanced')),
+      el('span', { style: { flex: 1 } }),
+      el('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, fontWeight: 400 } },
+        advanced ? t('collapse') : t('advanced.hintShort')),
+      el('span', { style: { color: 'var(--dsw-alias-label-tertiary)', transform: advanced ? 'rotate(90deg)' : 'none', transition: 'transform .15s ease' } }, '›'),
+    ),
     advanced
       ? el(
           'div',
@@ -599,6 +610,8 @@ export const zh = {
   notReady: '还不能分享',
   advanced: '高级设置',
   'advanced.hint': '一般不用改：端口、默认有效期、Surge 域名后缀。',
+  'advanced.hintShort': '端口 / 有效期 / 域名',
+  collapse: '收起',
   'channel.quick.desc': '零配置：dsh 在跑就有链接，重启换域名。适合临时发给别人看一眼。首次使用会自动下载 cloudflared（约 50 MB，需要能访问 GitHub）。',
   'channel.surge.desc': '免费账号即可，得到永久固定域名，随时可撤销。',
   'channel.named.desc': '需要你自己在 Cloudflare 建隧道并绑定域名。没有自有域名请直接选 Surge。',
@@ -667,6 +680,8 @@ export const en = {
   notReady: 'Not ready yet',
   advanced: 'Advanced',
   'advanced.hint': 'Usually not needed: port, default lifetime, Surge domain suffix.',
+  'advanced.hintShort': 'port / lifetime / domain',
+  collapse: 'Collapse',
   'channel.quick.desc': 'Zero config: the link lives as long as dsh runs; the hostname changes on restart. On first use it downloads cloudflared (~50 MB, needs GitHub access).',
   'channel.surge.desc': 'Free account is enough; you get a stable domain that you can revoke any time.',
   'channel.named.desc': 'Requires a tunnel you create in Cloudflare plus a domain you own. No domain? Pick Surge.',
