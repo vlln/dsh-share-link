@@ -1,4 +1,4 @@
-<h1 align="center">dsh-share-link</h1>
+<h1 align="center"><img src="icon.svg" width="34" height="34" alt="" valign="middle">&nbsp;dsh-share-link</h1>
 
 <p align="center"><b>把一段对话或一个产物，发布成只读的公网链接</b><br>对方点开就能看，撤销后立即失效。</p>
 
@@ -45,9 +45,13 @@ dsh 跑在本机，产物却经常要给外面的人看：一段对话要发给�
 
 ## 用起来是什么样
 
+<!-- 内联视频：GitHub 只认网页上传后的 user-attachments 链接（写法见 vlln/obsidian-harness）。
+     把上传返回的那行 https://github.com/user-attachments/assets/... 粘在下面，然后删掉封面那一行。 -->
+<!-- VIDEO -->
+
 [![26 秒演示：从会话菜单分享到打开只读页](docs/demo-poster.jpg)](docs/demo.mp4)
 
-<sub>▶ 点封面播放 26 秒录屏（`docs/demo.mp4`，914 KB；GitHub 在文件页内嵌播放器）</sub>
+<sub>▶ 点封面播放 26 秒录屏（`docs/demo.mp4`，914 KB）</sub>
 
 ### 分享会话
 
