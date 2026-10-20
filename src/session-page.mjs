@@ -24,6 +24,68 @@ function scrubHomePaths(text) {
     .replace(/[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/g, '~');
 }
 
+
+/** 复制按钮的最小内联脚本：只做剪贴板，不发任何外部请求。 */
+const COPY_SCRIPT = `<script>
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-copy]');
+  if (button === null) return;
+  const payload = button.dataset.copy === 'link'
+    ? location.href
+    : (button.closest('.code')?.querySelector('pre')?.innerText ?? '');
+  try {
+    await navigator.clipboard.writeText(payload);
+    button.dataset.done = '1';
+    setTimeout(() => { delete button.dataset.done; }, 1400);
+  } catch {}
+});
+</script>`;
+
+/** 三个页面共用的顶栏与基础排版。 */
+const SHARED_CSS = `
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfd; --fg: #1c1c21; --muted: #6b6b76; --line: #e6e6ee;
+    --card: #ffffff; --soft: #f6f6fa; --code-bg: #f5f5f9; --accent: #4d6bfe; --accent-soft: #eef2ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15151a; --fg: #e9e9ef; --muted: #9a9aa6; --line: #2a2a33;
+      --card: #1c1c22; --soft: #202027; --code-bg: #1f1f26; --accent: #8b9bff; --accent-soft: #232338;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body { font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; -webkit-font-smoothing: antialiased; }
+  .bar {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
+    padding: 10px 20px; background: color-mix(in srgb, var(--bg) 82%, transparent);
+    backdrop-filter: saturate(180%) blur(12px); border-bottom: 1px solid var(--line);
+  }
+  .bar .mark {
+    font: 600 12px/1 ui-monospace, Menlo, monospace; letter-spacing: .04em;
+    padding: 5px 7px; border-radius: 7px; color: var(--accent);
+    background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .bar .title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar .spacer { flex: 1; }
+  [data-copy] {
+    font: inherit; font-size: 12px; height: 26px; padding: 0 10px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--muted);
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  [data-copy]:hover { color: var(--fg); border-color: var(--muted); }
+  [data-copy][data-done] { color: #1f9d63; border-color: #1f9d63; }
+  [data-copy][data-done]::after { content: ' ✓'; }
+  .code { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--code-bg); }
+  .code-bar {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 12px;
+    border-bottom: 1px solid var(--line); font: 11px/1.6 ui-monospace, Menlo, monospace; color: var(--muted);
+  }
+  .code-bar span { flex: 1; }
+  .code pre { margin: 0; padding: 12px 14px; overflow-x: auto; border: 0; border-radius: 0; background: transparent; }
+`
+
 /**
  * 对一段正文做尽力脱敏。**不是保证**：它只挡常见凭据形态与家目录，挡不住
  * 业务机密、客户名、内网 IP。对外分享前仍应人工过一遍。
@@ -70,7 +132,11 @@ function renderBody(text) {
       const newline = chunk.indexOf('\n');
       const lang = newline === -1 ? '' : chunk.slice(0, newline).trim();
       const code = newline === -1 ? chunk : chunk.slice(newline + 1);
-      out.push(`<pre><code data-lang="${escapeHtml(lang)}">${escapeHtml(code.replace(/\n$/, ''))}</code></pre>`);
+      out.push(
+        `<div class="code"><div class="code-bar"><span>${escapeHtml(lang === '' ? 'code' : lang)}</span>` +
+          `<button type="button" data-copy="code">复制</button></div>` +
+          `<pre><code data-lang="${escapeHtml(lang)}">${escapeHtml(code.replace(/\n$/, ''))}</code></pre></div>`,
+      );
       continue;
     }
     out.push(renderBlocks(chunks[i]));
@@ -250,9 +316,16 @@ export function renderSessionPage(input) {
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
   footer code { font-size: 11.5px; }
   @media print { main { max-width: none; } .msg { break-inside: avoid; } }
+${SHARED_CSS}
 </style>
 </head>
 <body>
+<header class="bar">
+  <span class="mark">dsh</span>
+  <span class="title">${escapeHtml(title)}</span>
+  <span class="spacer"></span>
+  <button type="button" data-copy="link">复制链接</button>
+</header>
 <main>
   <div class="page-head">
     <h1>${escapeHtml(title)}</h1>
@@ -265,10 +338,11 @@ export function renderSessionPage(input) {
   </div>
   ${body}
   <footer>
-    这是一份静态快照：页面不含脚本，不会随原会话更新。链接由 <code>dsh-share-link</code> 生成，
-    撤销后立即失效。
+    这是一份静态快照：不加载任何外部资源（内联脚本只用于复制按钮），不会随原会话更新。
+    链接由 <code>dsh-share-link</code> 生成，撤销后立即失效。
   </footer>
 </main>
+${COPY_SCRIPT}
 </body>
 </html>`;
 }
@@ -311,13 +385,21 @@ export function renderMarkdownDocument(input) {
   .doc pre code { background: none; padding: 0; }
   .doc code { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px; }
   footer { margin-top: 18px; font-size: 12px; color: var(--muted); }
+${SHARED_CSS}
 </style>
 </head>
 <body>
+<header class="bar">
+  <span class="mark">md</span>
+  <span class="title">${escapeHtml(title)}</span>
+  <span class="spacer"></span>
+  <button type="button" data-copy="link">复制链接</button>
+</header>
 <main>
   <div class="doc">${renderBody(markdown)}</div>
   <footer>只读快照 · 由 dsh-share-link 生成</footer>
 </main>
+${COPY_SCRIPT}
 </body>
 </html>`;
 }
@@ -357,9 +439,16 @@ export function renderDirectoryIndex(input) {
   a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
   a:hover { text-decoration: underline; }
   span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+${SHARED_CSS}
 </style>
 </head>
 <body>
+<header class="bar">
+  <span class="mark">files</span>
+  <span class="title">${escapeHtml(title)}</span>
+  <span class="spacer"></span>
+  <button type="button" data-copy="link">复制链接</button>
+</header>
 <main>
   <h1>${escapeHtml(title)}</h1>
   <p class="hint">只读目录快照 · 由 dsh-share-link 生成</p>
@@ -367,6 +456,7 @@ export function renderDirectoryIndex(input) {
 ${rows}
   </ul>
 </main>
+${COPY_SCRIPT}
 </body>
 </html>`;
 }

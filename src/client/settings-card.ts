@@ -28,7 +28,7 @@ const CHANNELS = [
 function channelOf(cfg) {
   if (cfg.provider === 'surge') return 'surge'
   if (cfg.provider === 'lan') return 'lan'
-  return typeof cfg.tunnelToken === 'string' && cfg.tunnelToken !== '' ? 'named' : 'quick'
+  return cfg.tunnelMode === 'named' ? 'named' : 'quick'
 }
 
 /** 渠道相关的字段（端口与有效期对所有渠道通用）。 */
@@ -196,15 +196,8 @@ export function SettingsCard(props) {
   const pickChannel = (id) => {
     const target = CHANNELS.find((item) => item.id === id)
     if (target === undefined) return
-    if (target.id === 'named' && channel !== 'named') {
-      // 命名隧道必须先有域名才有意义：先切 provider，token 由字段补。
-      commit('provider', 'tunnel')
-      return
-    }
     commit('provider', target.provider)
-    if (target.id === 'quick' && typeof state.value.tunnelToken === 'string' && state.value.tunnelToken !== '') {
-      commit('tunnelToken', '')
-    }
+    if (target.id === 'quick' || target.id === 'named') commit('tunnelMode', target.id)
   }
 
   const active = CHANNELS.find((item) => item.id === channel)
@@ -322,8 +315,8 @@ export const zh = {
   'channel.hint': '选一个渠道，填好参数就能在会话右上角或文件预览里直接出链接。',
   'channel.quick': '快速隧道',
   'channel.quick.hint': 'cloudflared 临时域名，零配置；进程停掉链接即失效，域名每次重启会变。',
-  'channel.named': '命名隧道',
-  'channel.named.hint': '固定域名，要求你有**托管在 Cloudflare 的自有域名**。没有域名就用 Surge 或快速隧道——命名隧道本身不自带公网域名。',
+  'channel.named': '命名隧道（自有域名）',
+  'channel.named.hint': '「命名隧道」是你在 Cloudflare 上自己创建的一条隧道，配一个固定域名，重启也不变。前提：你有托管在 Cloudflare 的域名。没有域名这条走不通，请用 Surge 或快速隧道。',
   'channel.surge': 'Surge',
   'channel.surge.hint': '持久域名，可 `surge teardown` 撤销。免费账号即可，域名形如 <prefix>-<id>.surge.sh。',
   'channel.lan': '仅局域网',
@@ -360,8 +353,8 @@ export const en = {
   'channel.hint': 'Pick one channel and fill in its settings; shares then work from the session menu or a file preview.',
   'channel.quick': 'Quick tunnel',
   'channel.quick.hint': 'Zero-config cloudflared URL. Dies with the process and the hostname changes on restart.',
-  'channel.named': 'Named tunnel',
-  'channel.named.hint': 'Stable hostname, but only if you own a domain hosted on Cloudflare. Without one use Surge or a quick tunnel — a named tunnel has no public hostname by itself.',
+  'channel.named': 'Named tunnel (own domain)',
+  'channel.named.hint': 'A named tunnel is one you create yourself in Cloudflare and pin to a stable hostname that survives restarts. It requires a domain hosted on Cloudflare; without one use Surge or a quick tunnel instead.',
   'channel.surge': 'Surge',
   'channel.surge.hint': 'Persistent domain, revocable with `surge teardown`. Free account is enough; links look like <prefix>-<id>.surge.sh.',
   'channel.lan': 'LAN only',

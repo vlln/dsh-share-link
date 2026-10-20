@@ -24,6 +24,7 @@ export const inject = ['tools', 'sessionQuery', 'connection']
 /** 配置默认值（设置卡与运行时共用同一份，避免两处漂移）。 */
 export const DEFAULTS = Object.freeze({
   provider: 'tunnel',
+  tunnelMode: 'quick',
   port: 0,
   ttlHours: 168,
   cloudflaredPath: '',
@@ -40,6 +41,10 @@ export const Config = Schema.object({
     .default(DEFAULTS.provider)
     .volatile()
     .description('tunnel = 公网 cloudflared（可撤销）；lan = 仅同局域网；surge = Surge 持久域名（可 teardown）'),
+  tunnelMode: Schema.union(['quick', 'named'])
+    .default(DEFAULTS.tunnelMode)
+    .volatile()
+    .description('quick = cloudflared 临时域名；named = 你在 Cloudflare 自建的固定域名隧道（需要自有域名）'),
   port: Schema.natural().default(DEFAULTS.port).volatile().description('只读分享服务端口，0 = 随机（命名隧道模式下自动用 3089）'),
   ttlHours: Schema.natural().min(1).max(720).default(DEFAULTS.ttlHours).volatile().description('分享链接默认有效期（小时）'),
   cloudflaredPath: Schema.string().default(DEFAULTS.cloudflaredPath).volatile().description('已有 cloudflared 可执行文件路径；留空则自动查找/下载'),

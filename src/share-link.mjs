@@ -251,6 +251,14 @@ export const GUIDES = {
     linkText: 'surge.sh',
     command: 'npm i -g surge',
   },
+  cfToken: {
+    code: 'cfToken',
+    title: '命名隧道缺少 token',
+    body: '命名隧道是你在 Cloudflare 上自建的隧道：需要在 Zero Trust 里创建，把 connector token 填到这里，并把域名路由到本机端口。没有自有域名就没法用，改用 Surge 或快速隧道。',
+    href: 'https://one.dash.cloudflare.com/',
+    linkText: '打开 Cloudflare Zero Trust',
+    command: null,
+  },
   cfHostname: {
     code: 'cfHostname',
     title: '命名隧道缺少域名',
@@ -320,8 +328,9 @@ export class ShareManager {
 
   #listen() {
     if (this.server !== null) return Promise.resolve()
-    const named = typeof this.config.tunnelToken === 'string' && this.config.tunnelToken !== ''
-    const requested = Number.isInteger(this.config.port) && this.config.port > 0 ? this.config.port : named ? 3089 : 0
+    const named = this.config.tunnelMode === 'named'
+    const requested =
+      Number.isInteger(this.config.port) && this.config.port > 0 ? this.config.port : named ? 3089 : 0
     return new Promise((resolvePromise, reject) => {
       const server = createServer((request, response) => this.#serve(request, response))
       server.on('error', reject)
@@ -385,7 +394,10 @@ export class ShareManager {
         : { provider, ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
     }
     if (provider === 'tunnel') {
-      if (typeof this.config.tunnelToken === 'string' && this.config.tunnelToken !== '') {
+      if (this.config.tunnelMode === 'named') {
+        if (typeof this.config.tunnelToken !== 'string' || this.config.tunnelToken === '') {
+          return { provider, ready: false, guide: GUIDES.cfToken, detail: '命名隧道缺 token' }
+        }
         if (typeof this.config.tunnelHostname !== 'string' || this.config.tunnelHostname === '') {
           return { provider, ready: false, guide: GUIDES.cfHostname, detail: '命名隧道缺 tunnelHostname' }
         }
@@ -669,8 +681,10 @@ export class ShareManager {
   }
 
   async #startTunnel() {
-    if (typeof this.config.tunnelToken === 'string' && this.config.tunnelToken !== '') {
-      return await this.#startNamedTunnel(this.config.tunnelToken)
+    if (this.config.tunnelMode === 'named') {
+      const token = this.config.tunnelToken
+      if (typeof token !== 'string' || token === '') throw new Error('命名隧道缺少 token')
+      return await this.#startNamedTunnel(token)
     }
     let binary
     try {
