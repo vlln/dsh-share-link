@@ -443,28 +443,32 @@ export function SettingsCard(props) {
           el('span', null, `${readiness(channel)?.ready ? t('ready') : t('notReady')} · ${CHANNEL_INFO[channel].name(t)}`),
         ),
 
-    // 默认通道（不是"当前通道"，只是弹窗里的默认选项）
-    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '0 0 2px' } }, t('default.title')),
-    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 10 } }, t('default.hint')),
+    // 默认通道：标签 + 原生下拉，同一行，避免"上方标题、下方按钮"的割裂
     el(
       'div',
-      { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-      CHANNELS.map((item) =>
-        el('button', {
-          key: item.id,
-          type: 'button',
+      { style: { display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0 4px' } },
+      el('span', { style: { fontSize: 13, fontWeight: 500 } }, t('default.title')),
+      el('span', { style: { flex: 1 } }),
+      el(
+        'select',
+        {
+          'data-share-default-channel': 'true',
+          value: channel,
           disabled,
-          'data-share-channel': item.id,
-          'data-active': item.id === channel ? 'true' : 'false',
-          onClick: () => commit('defaultChannel', item.id),
+          onChange: (event) => commit('defaultChannel', event.target.value),
           style: {
-            height: 32, padding: '0 12px', fontSize: 12.5, borderRadius: 9, cursor: 'pointer',
-            border: item.id === channel ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '0.5px solid var(--dsw-alias-border-l2)',
-            background: item.id === channel ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
-            color: item.id === channel ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
-            fontWeight: item.id === channel ? 600 : 400,
+            height: 32, padding: '0 28px 0 10px', borderRadius: 9, fontSize: 12.5, cursor: 'pointer',
+            color: 'var(--dsw-alias-label-primary)',
+            background: 'var(--dsw-alias-bg-layer-1, transparent)',
+            border: '0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l2))',
+            appearance: 'none',
+            backgroundImage:
+              'url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 12 12%22 fill=%22none%22><path d=%22M3 4.5L6 7.5L9 4.5%22 stroke=%22%236b6b76%22 stroke-width=%221.4%22 stroke-linecap=%22round%22/></svg>")',
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 9px center',
           },
-        }, item.labelKey === 'channel.quick' ? `${t(item.labelKey)} · ${t('recommended')}` : t(item.labelKey)),
+        },
+        CHANNELS.map((item) => el('option', { key: item.id, value: item.id }, t(item.labelKey))),
       ),
     ),
 

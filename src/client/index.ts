@@ -55,7 +55,7 @@ function installMenuIntegration() {
     const icon = button.querySelector('svg')
     if (icon !== null) icon.outerHTML = LINK_ICON
     const label = [...button.querySelectorAll('span')].at(-1)
-    if (label !== undefined) label.textContent = english ? 'Share conversation…' : '分享会话…'
+    if (label !== undefined) label.textContent = english ? 'Share conversation' : '分享会话'
 
     button.addEventListener('click', (event) => {
       event.preventDefault()
