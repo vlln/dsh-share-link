@@ -1,0 +1,4 @@
+# dsh-share-link bundle：挂 Node half（分享服务 + 工具 + 路由）与 client half（分享入口）。
+- insert:
+    - id: dsh-share-link
+      name: '@vlln/dsh-share-link'
