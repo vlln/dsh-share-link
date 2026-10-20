@@ -3,8 +3,10 @@
 <p align="center">把一段对话或一个产物，发布成只读的公网链接——对方点开就能看，撤销后立即失效。</p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/@vlln/dsh-share-link"><img alt="npm" src="https://img.shields.io/npm/v/@vlln/dsh-share-link?color=4d6bfe"></a>
+  <a href="https://github.com/vlln/dsh-share-link/stargazers"><img alt="stars" src="https://img.shields.io/github/stars/vlln/dsh-share-link?style=flat"></a>
+  <a href="https://github.com/vlln/dsh-share-link/blob/main/LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="dsh" src="https://img.shields.io/badge/dsh-0.2.1--rc.1-blue">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
 ## 30 秒安装
