@@ -69,6 +69,8 @@ const FIELD_SPEC = {
   surgeLogin: { kind: 'text', secret: false },
   surgeToken: { kind: 'text', secret: true },
   surgeDomain: { kind: 'text', secret: false },
+  surgePrefix: { kind: 'text', secret: false },
+  surgeLogin: { kind: 'text', secret: false },
 }
 
 const el = h
@@ -76,6 +78,7 @@ const el = h
 /** 单字段：本地缓冲，失焦 / 回车提交；被拒时回读宿主值。 */
 function Field(props) {
   const { fieldKey, value, disabled, secret, numeric, t, onCommit, resetToken } = props
+  const [reveal, setReveal] = React.useState(false)
   const initial = value === undefined || value === null ? '' : String(value)
   const [text, setText] = React.useState(initial)
   const [lastKey, setLastKey] = React.useState(initial)
@@ -103,26 +106,43 @@ function Field(props) {
       el('span', { style: { fontSize: 13, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' } }, t(`field.${fieldKey}`)),
       el('span', { style: { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' } }, t(`field.${fieldKey}.hint`)),
     ),
-    el('input', {
-      type: secret ? 'password' : numeric ? 'number' : 'text',
-      value: text,
-      disabled,
-      'data-share-field': fieldKey,
-      autoComplete: 'off',
-      onChange: (event) => setText(event.target.value),
-      onBlur: commit,
-      onKeyDown: (event) => {
-        if (event.key === 'Enter') commit()
-      },
-      style: {
-        width: 260, height: 30, padding: '0 10px', boxSizing: 'border-box',
-        fontSize: 12.5, fontFamily: numeric ? 'inherit' : 'ui-monospace, Menlo, monospace',
-        color: 'var(--dsw-alias-label-primary)',
-        background: 'var(--dsw-alias-bg-layer-1, transparent)',
-        border: '0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l2))',
-        borderRadius: 8,
-      },
-    }),
+    el(
+      'span',
+      { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
+      el('input', {
+        type: secret && !reveal ? 'password' : numeric ? 'number' : 'text',
+        value: text,
+        disabled,
+        'data-share-field': fieldKey,
+        autoComplete: 'off',
+        onChange: (event) => setText(event.target.value),
+        onBlur: commit,
+        onKeyDown: (event) => {
+          if (event.key === 'Enter') commit()
+        },
+        style: {
+          width: 260, height: 30, padding: '0 10px', boxSizing: 'border-box',
+          fontSize: 12.5, fontFamily: numeric ? 'inherit' : 'ui-monospace, Menlo, monospace',
+          color: 'var(--dsw-alias-label-primary)',
+          background: 'var(--dsw-alias-bg-layer-1, transparent)',
+          border: '0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l2))',
+          borderRadius: 8,
+        },
+      }),
+      secret
+        ? el('button', {
+            type: 'button',
+            'data-reveal': fieldKey,
+            title: reveal ? t('hide') : t('show'),
+            onClick: () => setReveal((value) => !value),
+            style: {
+              height: 30, padding: '0 8px', borderRadius: 8, cursor: 'pointer', fontSize: 12,
+              border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent',
+              color: 'var(--dsw-alias-label-tertiary)',
+            },
+          }, reveal ? t('hide') : t('show'))
+        : null,
+    ),
   )
 }
 
@@ -266,6 +286,8 @@ export function SettingsCard(props) {
   const settled =
     channel === 'surge' && status !== null && status.ready === true && status.via === 'netrc' &&
     (state.value.surgeToken ?? '') === '' && !showToken
+  // 已经配好 token 的渠道：步骤与入口也不必再占位置，只留字段本身。
+  const configured = status !== null && status.ready === true && status.via !== undefined && status.via !== 'netrc'
   const info = CHANNEL_INFO[channel]
   const steps = info.steps === undefined ? [] : info.steps(t)
   const field = (key) =>
@@ -274,8 +296,8 @@ export function SettingsCard(props) {
       fieldKey: key,
       value: state.value[key],
       disabled,
-      secret: FIELD_SPEC[key].secret,
-      numeric: FIELD_SPEC[key].kind === 'number',
+      secret: (FIELD_SPEC[key] ?? {}).secret === true,
+      numeric: (FIELD_SPEC[key] ?? {}).kind === 'number',
       t,
       resetToken,
       onCommit: (name, value) => commit(name, value),
@@ -340,7 +362,7 @@ export function SettingsCard(props) {
       },
       el('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } }, info.name(t)),
       el('div', { style: { fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, info.desc(t)),
-      steps.length === 0 || settled
+      steps.length === 0 || settled || configured
         ? null
         : el(
             'ol',
@@ -360,7 +382,7 @@ export function SettingsCard(props) {
             el(CopyCommand, { command: 'surge login', t }),
           )
         : null,
-      info.link === undefined || settled
+      info.link === undefined || settled || configured
         ? null
         : el(
             'div',
@@ -495,6 +517,8 @@ export const zh = {
   'link.surge': '打开 surge.sh',
   copy: '复制',
   copied: '已复制',
+  show: '显示',
+  hide: '隐藏',
   'surge.localLogin': '已使用本机 Surge 登录态，不用填任何东西',
   'surge.useToken': '改用 token',
   'step.named.1': 'Cloudflare Zero Trust → Networks → Tunnels → 创建隧道',
@@ -550,6 +574,8 @@ export const en = {
   'link.surge': 'Open surge.sh',
   copy: 'Copy',
   copied: 'Copied',
+  show: 'Show',
+  hide: 'Hide',
   'surge.localLogin': 'Using this machine\'s Surge login — nothing to fill in',
   'surge.useToken': 'Use a token instead',
   'step.named.1': 'Cloudflare Zero Trust → Networks → Tunnels → create a tunnel',
