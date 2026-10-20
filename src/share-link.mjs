@@ -404,6 +404,30 @@ export class ShareManager {
   }
 
   /**
+   * 设置卡里的样式预览：用同一套渲染器出一页样例（不写盘、不发布）。
+   * @param {{theme?: string, customCss?: string}} [options]
+   * @returns {string}
+   */
+  previewPage(options = {}) {
+    return renderSessionPage({
+      title: '分享页样式预览',
+      sessionId: 'session-预览',
+      createdAt: Date.now(),
+      fingerprint: 'a1b2c3d4e5f60718',
+      redactedCount: 0,
+      theme: options.theme ?? this.config.pageTheme,
+      customCss: options.customCss ?? this.config.pageThemeCss,
+      messages: [
+        { role: 'user', text: '这段对话会被发布成一个只读链接，对方不用装 dsh 也能看。' },
+        {
+          role: 'assistant',
+          text: '好的。\n\n风格可以随时换，正文与代码块都会跟着变：\n\n```js\nconst share = await createSessionShare(id)\n```\n\n- 链接可撤销\n- 快照默认脱敏',
+        },
+      ],
+    })
+  }
+
+  /**
    * 通道就绪情况：client 半在打开分享框时就查这个，未就绪直接给引导，而不是等失败。
    * @returns {Promise<{provider: string, ready: boolean, guide?: object, detail: string}>}
    */
@@ -501,6 +525,8 @@ export class ShareManager {
       messages: safeMessages,
       fingerprint: createHash('sha256').update(rawText).digest('hex').slice(0, 16),
       redactedCount,
+      theme: this.config.pageTheme,
+      customCss: this.config.pageThemeCss,
     })
     return this.#publish({
       kind: 'session',
@@ -535,6 +561,8 @@ export class ShareManager {
         body['index.html'] = renderDirectoryIndex({
           title: target.split(sep).at(-1) ?? 'files',
           entries,
+          theme: this.config.pageTheme,
+          customCss: this.config.pageThemeCss,
         })
       }
     } else if (/\.html?$/i.test(target)) {
@@ -544,6 +572,8 @@ export class ShareManager {
       body['index.html'] = renderMarkdownDocument({
         title: name.replace(/\.md$/i, ''),
         markdown: readFileSync(target, 'utf8'),
+        theme: this.config.pageTheme,
+        customCss: this.config.pageThemeCss,
       })
     } else {
       const name = target.split(sep).at(-1) ?? 'file'

@@ -35,6 +35,8 @@ export const DEFAULTS = Object.freeze({
   surgeToken: '',
   surgeDomain: '',
   surgePrefix: 'dsh-share',
+  pageTheme: 'paper',
+  pageThemeCss: '',
 })
 
 export const Config = Schema.object({
@@ -59,6 +61,11 @@ export const Config = Schema.object({
   surgeToken: Schema.string().default(DEFAULTS.surgeToken).volatile().description('Surge token（`surge tokens add`）；只注入给子进程，不落盘'),
   surgeDomain: Schema.string().default(DEFAULTS.surgeDomain).volatile().description('Surge 域名后缀，例如 example.com；留空用 slug.surge.sh'),
   surgePrefix: Schema.string().default(DEFAULTS.surgePrefix).volatile().description('Surge 子域前缀，最终域名是 <prefix>-<id>.surge.sh'),
+  pageTheme: Schema.union(['paper', 'github', 'notion', 'sepia', 'terminal', 'custom'])
+    .default('paper')
+    .volatile()
+    .description('分享页预设风格；custom = 只用 pageThemeCss'),
+  pageThemeCss: Schema.string().default('').volatile().description('自定义 CSS，追加在预设之后（可只写变量覆盖）'),
 })
 
 /**
@@ -315,6 +322,16 @@ export function apply(ctx, config = {}) {
   })
 
   route('/api/share-link/status', ['GET'], async () => json(await manager.status()))
+
+  // 预览：用同一套渲染器出一页样例，设置卡里 iframe 直接展示
+  route('/api/share-link/preview', ['POST'], async (request) => {
+    const body = await readJson(request)
+    const html = manager.previewPage({
+      theme: body.theme,
+      customCss: body.customCss,
+    })
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+  })
 
   route('/api/share-link/list', ['GET'], async () => json({ items: manager.list() }))
 

@@ -171,6 +171,81 @@ export function redact(text) {
   return out;
 }
 
+
+/** 分享页预设风格。用户也可以给自定义 CSS 覆盖这些变量。 */
+export const PAGE_THEMES = ['paper', 'github', 'notion', 'sepia', 'terminal']
+
+const THEME_CSS = {
+  // 暖纸：默认，偏阅读
+  paper: `:root {
+    --bg: #f6f5f2; --paper: #fffefc; --fg: #1b1b1f; --muted: #6e6e78;
+    --line: #e7e4dd; --code-bg: #f4f2ee; --accent: #3f5bd9; --star: #8a6d1f;
+  }`,
+  // GitHub README：白底、细边框、系统字体
+  github: `:root {
+    --bg: #ffffff; --paper: #ffffff; --fg: #1f2328; --muted: #59636e;
+    --line: #d1d9e0; --code-bg: #f6f8fa; --accent: #0969da; --star: #9a6700;
+  }
+  body { font-size: 15px; line-height: 1.7; }
+  h1 { font-size: 24px; font-weight: 600; letter-spacing: 0; }
+  .bar { background: #ffffff; border-bottom-color: #d1d9e0; }
+  .tag { border-color: #d1d9e0; background: #ffffff; }
+  .turn.user .body { border-left-width: 4px; }`,
+  // Notion：极简、无边框、大留白
+  notion: `:root {
+    --bg: #ffffff; --paper: #ffffff; --fg: #37352f; --muted: #787774;
+    --line: #e9e9e7; --code-bg: #f7f6f3; --accent: #2383e2; --star: #b07d00;
+  }
+  body { font-size: 16px; line-height: 1.75; }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+  .bar { border-bottom: 0; background: #ffffff; }
+  .tag { border: 0; background: #f1f0ee; }
+  .turn.user .body { border-left: 0; padding-left: 0; font-weight: 500; }
+  .turn.user .body::before { content: '“'; display: block; font-size: 28px; line-height: 1; color: var(--line); }
+  footer { border-top: 0; }`,
+  // 散文/阅读：衬线、米色、宽行距
+  sepia: `:root {
+    --bg: #f4ecd8; --paper: #f7f0df; --fg: #3b2f22; --muted: #7a6a55;
+    --line: #ded1b6; --code-bg: #efe6d0; --accent: #8a5a2b; --star: #8a5a2b;
+  }
+  body {
+    font-family: Georgia, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", serif;
+    font-size: 17px; line-height: 1.95;
+  }
+  h1 { font-size: 28px; font-weight: 600; letter-spacing: 0; }
+  .turn .who { letter-spacing: .1em; font-family: -apple-system, sans-serif; }
+  .bar { background: #f7f0df; border-bottom-color: #ded1b6; }
+  .tag { background: #f7f0df; border-color: #ded1b6; }`,
+  // 终端：暗色、等宽
+  terminal: `:root {
+    --bg: #0d1117; --paper: #0d1117; --fg: #c9d1d9; --muted: #8b949e;
+    --line: #21262d; --code-bg: #161b22; --accent: #3fb950; --star: #d29922;
+    color-scheme: dark;
+  }
+  body {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 14px; line-height: 1.8;
+  }
+  h1 { font-size: 22px; font-weight: 600; letter-spacing: 0; }
+  .turn .who { text-transform: uppercase; letter-spacing: .12em; }
+  .bar { background: #0d1117; border-bottom-color: #21262d; }
+  .tag { background: #161b22; border-color: #21262d; }`,
+}
+
+/**
+ * 生成某个风格的 CSS：预设变量 + 用户自定义覆盖（自定义永远最后生效）。
+ * @param {string} [name]
+ * @param {string} [custom]
+ * @returns {string}
+ */
+export function themeCss(name, custom = '') {
+  const base = THEME_CSS[name] ?? THEME_CSS.paper;
+  // 只挡 style 提前闭合，用户自己的 CSS 允许任意内容
+  const safe = String(custom ?? '').replace(/<\/style/gi, '<\\/style');
+  return safe.trim() === '' ? base : `${base}\n/* 自定义 */\n${safe}`;
+}
+
+
 /** @param {string} value */
 function escapeHtml(value) {
   return String(value ?? '')
@@ -319,7 +394,7 @@ function renderMessage(message) {
  * @returns {string} 完整 HTML 文档。
  */
 export function renderSessionPage(input) {
-  const { title, sessionId, createdAt, messages, fingerprint = '', redactedCount = 0 } = input;
+  const { title, sessionId, createdAt, messages, fingerprint = '', redactedCount = 0, theme, customCss } = input;
   const stamp = new Date(createdAt).toISOString().replace('T', ' ').slice(0, 16);
   const body = messages.map(renderMessage).join('\n');
   const redactNote = redactedCount > 0 ? `已脱敏 ${redactedCount} 处` : '未命中常见凭据形态';
@@ -333,7 +408,7 @@ export function renderSessionPage(input) {
 <title>${escapeHtml(title)}</title>
 <style>
 ${PAGE_CSS}
-
+${themeCss(theme, customCss)}
 </style>
 </head>
 <body>
@@ -365,7 +440,7 @@ ${COPY_SCRIPT}
 }
 
 export function renderMarkdownDocument(input) {
-  const { title, markdown } = input;
+  const { title, markdown, theme, customCss } = input;
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -375,6 +450,7 @@ export function renderMarkdownDocument(input) {
 <title>${escapeHtml(title)}</title>
 <style>
 ${PAGE_CSS}
+${themeCss(theme, customCss)}
   .doc h1:first-child { margin-top: 0; }
 </style>
 </head>
@@ -404,7 +480,7 @@ ${COPY_SCRIPT}
  * @returns {string} 完整 HTML。
  */
 export function renderDirectoryIndex(input) {
-  const { title, entries } = input;
+  const { title, entries, theme, customCss } = input;
   const rows = entries
     .map(
       (entry) =>
@@ -421,6 +497,7 @@ export function renderDirectoryIndex(input) {
 <title>${escapeHtml(title)}</title>
 <style>
 ${PAGE_CSS}
+${themeCss(theme, customCss)}
   .files { list-style: none; margin: 26px 0 0; padding: 0; }
   .files li { display: flex; justify-content: space-between; gap: 16px; padding: 11px 2px; border-bottom: 1px solid var(--line); }
   .files li:first-child { border-top: 1px solid var(--line); }

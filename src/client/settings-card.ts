@@ -239,6 +239,80 @@ function CopyCommand(props) {
   }, done ? t('copied') : t('copy'))
 }
 
+/** 用同一套渲染器出的样式预览（iframe srcdoc，禁用脚本）。 */
+function ThemePreview(props) {
+  const { theme, customCss } = props
+  const [html, setHtml] = React.useState('')
+  const [failed, setFailed] = React.useState(false)
+  React.useEffect(() => {
+    let alive = true
+    setFailed(false)
+    fetch('/api/share-link/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ theme, customCss }),
+    })
+      .then((response) => (response.ok ? response.text() : Promise.reject(new Error(String(response.status)))))
+      .then((text) => {
+        if (alive) setHtml(text)
+      })
+      .catch(() => {
+        if (alive) setFailed(true)
+      })
+    return () => {
+      alive = false
+    }
+  }, [theme, customCss])
+
+  return el(
+    'div',
+    { 'data-share-preview': theme, style: { marginTop: 10 } },
+    failed
+      ? el('p', { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, '预览生成失败')
+      : el('iframe', {
+          title: 'share page preview',
+          srcDoc: html,
+          sandbox: 'allow-same-origin',
+          style: {
+            width: '100%', height: 300, border: '0.5px solid var(--dsw-alias-border-l2)',
+            borderRadius: 12, background: '#fff', display: 'block',
+          },
+        }),
+  )
+}
+
+/** 自定义 CSS 输入（多行，失焦或 Ctrl/Cmd+Enter 保存）。 */
+function CssArea(props) {
+  const { value, disabled, t, onCommit, resetToken } = props
+  const [text, setText] = React.useState(value ?? '')
+  const [last, setLast] = React.useState(value ?? '')
+  const [lastReset, setLastReset] = React.useState(resetToken)
+  if ((value ?? '') !== last || resetToken !== lastReset) {
+    setLast(value ?? '')
+    setLastReset(resetToken)
+    setText(value ?? '')
+  }
+  return el('textarea', {
+    'data-share-css': 'true',
+    value: text,
+    disabled,
+    spellCheck: false,
+    placeholder: ':root { --accent: #e11d48; }\nbody { letter-spacing: .01em; }',
+    onChange: (event) => setText(event.target.value),
+    onBlur: () => onCommit(text),
+    onKeyDown: (event) => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) onCommit(text)
+    },
+    style: {
+      marginTop: 10, width: '100%', height: 120, padding: '10px 12px', boxSizing: 'border-box',
+      font: '12px/1.7 ui-monospace, Menlo, monospace', color: 'var(--dsw-alias-label-primary)',
+      background: 'var(--dsw-alias-bg-layer-1, transparent)',
+      border: '0.5px solid var(--dsw-alias-border-l4, var(--dsw-alias-border-l2))', borderRadius: 10,
+      resize: 'vertical',
+    },
+  })
+}
+
 /** 设置卡本体。 */
 export function SettingsCard(props) {
   const state = props.useShareSettings((value) => value)
@@ -398,6 +472,41 @@ export function SettingsCard(props) {
     section('surge', ['surgeToken']),
     section('named', ['tunnelToken', 'tunnelHostname']),
 
+    // ---- 分享页样式
+    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '20px 0 2px' } }, t('theme.title')),
+    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 10 } }, t('theme.hint')),
+    el(
+      'div',
+      { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+      ['paper', 'github', 'notion', 'sepia', 'terminal', 'custom'].map((id) =>
+        el('button', {
+          key: id,
+          type: 'button',
+          disabled,
+          'data-share-theme': id,
+          'data-active': (state.value.pageTheme ?? 'paper') === id ? 'true' : 'false',
+          onClick: () => commit('pageTheme', id),
+          style: {
+            height: 30, padding: '0 11px', fontSize: 12.5, borderRadius: 8, cursor: 'pointer',
+            border: (state.value.pageTheme ?? 'paper') === id ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '0.5px solid var(--dsw-alias-border-l2)',
+            background: (state.value.pageTheme ?? 'paper') === id ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+            color: (state.value.pageTheme ?? 'paper') === id ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+            fontWeight: (state.value.pageTheme ?? 'paper') === id ? 600 : 400,
+          },
+        }, t(`theme.${id}`)),
+      ),
+    ),
+    el(ThemePreview, { theme: state.value.pageTheme ?? 'paper', customCss: state.value.pageThemeCss ?? '' }),
+    (state.value.pageTheme ?? 'paper') === 'custom'
+      ? el(CssArea, {
+          value: state.value.pageThemeCss ?? '',
+          disabled,
+          t,
+          resetToken,
+          onCommit: (value) => commit('pageThemeCss', value),
+        })
+      : null,
+
     failed === '' ? null : el('p', { role: 'status', style: { margin: '10px 0 0', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, t('writeFailed')),
 
     el('button', {
@@ -476,6 +585,14 @@ export const zh = {
   summary: '发布渠道、参数与已发布的链接',
   recommended: '推荐',
   checking: '检查中',
+  'theme.title': '分享页样式',
+  'theme.hint': '选一个预设，或选「自定义」写 CSS（变量：--bg --fg --muted --line --code-bg --accent）。新分享生效，已发布的不会变。',
+  'theme.paper': '暖纸',
+  'theme.github': 'GitHub',
+  'theme.notion': 'Notion',
+  'theme.sepia': '散文',
+  'theme.terminal': '终端',
+  'theme.custom': '自定义',
   'default.title': '默认分享通道',
   'default.hint': '只决定分享弹窗里默认选中哪个；弹窗里随时可以临时换通道。',
   ready: '可以分享',
@@ -536,6 +653,14 @@ export const en = {
   summary: 'Publishing channels, their settings, and active links',
   recommended: 'recommended',
   checking: 'checking',
+  'theme.title': 'Share page style',
+  'theme.hint': 'Pick a preset, or choose Custom and write CSS (vars: --bg --fg --muted --line --code-bg --accent). Applies to new shares.',
+  'theme.paper': 'Paper',
+  'theme.github': 'GitHub',
+  'theme.notion': 'Notion',
+  'theme.sepia': 'Sepia',
+  'theme.terminal': 'Terminal',
+  'theme.custom': 'Custom',
   'default.title': 'Default channel',
   'default.hint': 'Only sets what the share dialog preselects; you can switch per share in the dialog.',
   ready: 'Ready to share',
