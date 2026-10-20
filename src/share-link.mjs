@@ -386,9 +386,11 @@ export class ShareManager {
       if (binary === undefined) {
         return { provider, ready: false, guide: GUIDES.surgeMissing, detail: '没有 surge 可执行文件' }
       }
-      const authenticated = typeof this.config.surgeToken === 'string' && this.config.surgeToken !== ''
-        ? true
-        : hasSurgeCredentials()
+      // 三种登录态都算：配置里的 token、进程环境里的 SURGE_TOKEN、本机 ~/.netrc。
+      const authenticated =
+        (typeof this.config.surgeToken === 'string' && this.config.surgeToken !== '') ||
+        (process.env.SURGE_TOKEN ?? '') !== '' ||
+        hasSurgeCredentials()
       return authenticated
         ? { provider, ready: true, detail: 'surge 已登录' }
         : { provider, ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
