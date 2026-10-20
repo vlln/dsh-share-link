@@ -23,7 +23,7 @@ dsh plugin --profile web add @vlln/dsh-share-link
 > 尚未发布到 npm 时，用仓库里的 tarball：`pnpm build && pnpm pack`，然后
 > `dsh plugin --profile web add ./vlln-dsh-share-link-0.1.0.tgz`。
 
-- **前置**：dsh `>= 0.2.0`；macOS / Linux
+- **前置**：dsh `>= 0.2.0`；macOS / Linux 已验证，Windows 代码路径已实现但**未在真机验证**
 - **零配置可用**：默认走云端快速隧道，首次分享会自动下载 `cloudflared`（约 50 MB，需要能访问 GitHub）
 - **卸载**：`dsh plugin --profile web remove @vlln/dsh-share-link`
 
@@ -136,7 +136,7 @@ dsh 跑在本机，产物却经常要给外面的人看：一段对话要发给�
 
 ## 已知限制
 
-- 只支持 macOS / Linux。
+- **Windows**：`cloudflared.exe` 下载、`.exe/.cmd` 的 PATH 查找、`npx.cmd` 调用都已按 Windows 处理，但没有在 Windows 机器上跑过——遇到问题请开 issue 附报错。dsh 本体在 Windows 上的兼容性另见社区插件 `dsh-win32`。
 - 快速隧道的域名每次重启都会变；要固定地址请用 Surge 或命名隧道。
 - 样式在**发布时固化**：改风格只影响之后的新分享。
 - 目录入口页只列文件，不列空目录；单次分享上限 100 MB / 2000 个文件。

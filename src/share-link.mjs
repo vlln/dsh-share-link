@@ -23,7 +23,7 @@ import {
 } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, networkInterfaces } from 'node:os'
-import { extname, join, relative, resolve, sep } from 'node:path'
+import { delimiter, extname, join, relative, resolve, sep } from 'node:path'
 
 import { foldSurface } from '@deepseek-ai/dsh-session'
 
@@ -39,6 +39,10 @@ export const LIMITS = {
   maxBytes: 100 * 1024 * 1024,
   maxFiles: 2000,
 }
+
+/** Windows 上可执行文件带扩展名、PATH 分隔符也不同。 */
+const IS_WINDOWS = process.platform === 'win32'
+const BINARY_NAME = IS_WINDOWS ? 'cloudflared.exe' : 'cloudflared'
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -888,7 +892,7 @@ export class ShareManager {
  */
 async function resolveCloudflared(root, explicit) {
   if (typeof explicit === 'string' && explicit !== '') return explicit
-  const cached = join(root, 'bin', 'cloudflared')
+  const cached = join(root, 'bin', BINARY_NAME)
   if (existsSync(cached)) return cached
   for (const dir of (process.env.PATH ?? '').split(':')) {
     const candidate = join(dir, 'cloudflared')
@@ -905,6 +909,27 @@ async function resolveCloudflared(root, explicit) {
 async function downloadCloudflared(binDir) {
   mkdirSync(binDir, { recursive: true })
   const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
+
+  // Windows 的 release 资产是裸 .exe，不需要解压。
+  if (IS_WINDOWS) {
+    const asset = `cloudflared-windows-${arch}.exe`
+    for (const base of [
+      `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
+      `https://ghproxy.net/https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
+    ]) {
+      try {
+        const response = await fetch(base, { redirect: 'follow' })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const binary = join(binDir, BINARY_NAME)
+        writeFileSync(binary, Buffer.from(await response.arrayBuffer()))
+        return binary
+      } catch {
+        /* 换镜像再试 */
+      }
+    }
+    throw new Error('下载 cloudflared.exe 失败')
+  }
+
   const os = process.platform === 'darwin' ? 'darwin' : 'linux'
   const asset = `cloudflared-${os}-${arch}.tgz`
   const bases = [
@@ -944,7 +969,12 @@ async function downloadCloudflared(binDir) {
 export function runTool(name, args, env) {
   return whichTool(name).then((binary) => new Promise((resolvePromise, reject) => {
     const argv = binary === undefined ? ['--yes', name, ...args] : args
-    const child = spawn(binary ?? 'npx', argv, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    // Windows 上 `npx` 是 npx.cmd，不经过 shell 直接 spawn 会 ENOENT。
+    const child = spawn(binary ?? 'npx', argv, {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: binary === undefined && IS_WINDOWS,
+    })
     let output = ''
     child.stdout.on('data', (chunk) => {
       output += String(chunk)
@@ -966,13 +996,16 @@ export function runTool(name, args, env) {
  * @returns {Promise<string|undefined>}
  */
 async function whichTool(name) {
-  for (const dir of (process.env.PATH ?? '').split(':')) {
+  const candidates = IS_WINDOWS ? [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name] : [name]
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (dir === '') continue
-    const candidate = join(dir, name)
-    try {
-      if (statSync(candidate).isFile()) return candidate
-    } catch {
-      /* 不存在就继续 */
+    for (const candidate of candidates) {
+      const full = join(dir, candidate)
+      try {
+        if (statSync(full).isFile()) return full
+      } catch {
+        /* 不存在就继续 */
+      }
     }
   }
   return undefined
