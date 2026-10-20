@@ -26,13 +26,18 @@ function scrubHomePaths(text) {
 
 
 /** 复制按钮的最小内联脚本：只做剪贴板，不发任何外部请求。 */
+const STAR_URL = 'https://github.com/vlln/dsh-share-link';
+
 const COPY_SCRIPT = `<script>
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-copy]');
   if (button === null) return;
-  const payload = button.dataset.copy === 'link'
+  const kind = button.dataset.copy;
+  const payload = kind === 'link'
     ? location.href
-    : (button.closest('.code')?.querySelector('pre')?.innerText ?? '');
+    : kind === 'content'
+      ? (document.querySelector('[data-copy-source]')?.innerText ?? '').trim()
+      : (button.closest('.code')?.querySelector('pre')?.innerText ?? '');
   try {
     await navigator.clipboard.writeText(payload);
     button.dataset.done = '1';
@@ -84,6 +89,20 @@ const SHARED_CSS = `
   }
   .code-bar span { flex: 1; }
   .code pre { margin: 0; padding: 12px 14px; overflow-x: auto; border: 0; border-radius: 0; background: transparent; }
+  .star {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin-top: 32px; padding: 16px 18px; border-radius: 14px;
+    border: 1px solid var(--line); background: var(--card);
+  }
+  .star .txt { flex: 1; min-width: 200px; font-size: 13px; line-height: 1.6; color: var(--muted); }
+  .star .txt b { color: var(--fg); font-weight: 600; }
+  .star a {
+    flex: none; display: inline-flex; align-items: center; gap: 6px;
+    height: 34px; padding: 0 14px; border-radius: 9px; text-decoration: none;
+    font-size: 13px; font-weight: 600; color: #6b4b00;
+    background: linear-gradient(180deg, #ffd97a, #f7c948); border: 1px solid #e6b83a;
+  }
+  .star a:hover { filter: brightness(1.03); }
 `
 
 /**
@@ -291,13 +310,16 @@ export function renderSessionPage(input) {
     border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px;
     background: var(--card); font-size: 12px;
   }
-  .msg { margin: 0 0 20px; }
-  .msg > header { display: flex; gap: 10px; align-items: baseline; margin-bottom: 6px; }
-  .who { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
+  .msg { margin: 0 0 22px; }
+  .msg > header { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .who { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
+  .who::before { content: ''; width: 7px; height: 7px; border-radius: 999px; background: var(--line); }
   .msg.user .who { color: var(--accent); }
+  .msg.user .who::before { background: var(--accent); }
+  .msg.assistant .who::before { background: #1f9d63; }
   time { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .body { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-wrap: anywhere; }
-  .msg.user .body { background: var(--user); border-color: transparent; }
+  .body { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; overflow-wrap: anywhere; box-shadow: 0 1px 2px rgba(16,16,24,.04); }
+  .msg.user .body { background: var(--user); border-color: transparent; box-shadow: none; }
   .body > p:first-child { margin-top: 0; }
   .body > p:last-child { margin-bottom: 0; }
   .body p { margin: 0 0 10px; }
@@ -313,7 +335,23 @@ export function renderSessionPage(input) {
   code { font: 12.5px/1.5 ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px; }
   .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .tool { font: 11.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 3px 6px; }
-  footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .star {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin-top: 36px; padding: 16px 18px; border-radius: 14px;
+    border: 1px solid var(--line); background: var(--card);
+  }
+  .star .txt { flex: 1; min-width: 200px; font-size: 13px; line-height: 1.6; color: var(--muted); }
+  .star .txt b { color: var(--fg); font-weight: 600; }
+  .star a {
+    flex: none; display: inline-flex; align-items: center; gap: 6px;
+    height: 34px; padding: 0 14px; border-radius: 9px; text-decoration: none;
+    font-size: 13px; font-weight: 600; color: #6b4b00;
+    background: linear-gradient(180deg, #ffd97a, #f7c948);
+    border: 1px solid #e6b83a;
+    box-shadow: 0 1px 2px rgba(0,0,0,.08);
+  }
+  .star a:hover { filter: brightness(1.03); }
+  footer { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
   footer code { font-size: 11.5px; }
   @media print { main { max-width: none; } .msg { break-inside: avoid; } }
 ${SHARED_CSS}
@@ -324,9 +362,10 @@ ${SHARED_CSS}
   <span class="mark">dsh</span>
   <span class="title">${escapeHtml(title)}</span>
   <span class="spacer"></span>
-  <button type="button" data-copy="link">复制链接</button>
+  <button type="button" data-copy="content">复制正文</button>
 </header>
 <main>
+  <article data-copy-source>
   <div class="page-head">
     <h1>${escapeHtml(title)}</h1>
     <div class="meta">
@@ -337,6 +376,14 @@ ${SHARED_CSS}
     </div>
   </div>
   ${body}
+  </article>
+  <section class="star">
+    <div class="txt">
+      这份快照由开源插件 <b>dsh-share-link</b> 生成。<br>
+      如果它帮你省了事，欢迎去仓库点个 Star —— 那是继续维护它的最大动力。
+    </div>
+    <a href="${STAR_URL}" target="_blank" rel="noreferrer">★ 在 GitHub 上点个 Star</a>
+  </section>
   <footer>
     这是一份静态快照：不加载任何外部资源（内联脚本只用于复制按钮），不会随原会话更新。
     链接由 <code>dsh-share-link</code> 生成，撤销后立即失效。
@@ -393,10 +440,14 @@ ${SHARED_CSS}
   <span class="mark">md</span>
   <span class="title">${escapeHtml(title)}</span>
   <span class="spacer"></span>
-  <button type="button" data-copy="link">复制链接</button>
+  <button type="button" data-copy="content">复制正文</button>
 </header>
 <main>
-  <div class="doc">${renderBody(markdown)}</div>
+  <article data-copy-source><div class="doc">${renderBody(markdown)}</div></article>
+  <section class="star">
+    <div class="txt">这份页面由开源插件 <b>dsh-share-link</b> 生成。觉得有用的话，欢迎去仓库点个 Star。</div>
+    <a href="${STAR_URL}" target="_blank" rel="noreferrer">★ 在 GitHub 上点个 Star</a>
+  </section>
   <footer>只读快照 · 由 dsh-share-link 生成</footer>
 </main>
 ${COPY_SCRIPT}
@@ -447,14 +498,20 @@ ${SHARED_CSS}
   <span class="mark">files</span>
   <span class="title">${escapeHtml(title)}</span>
   <span class="spacer"></span>
-  <button type="button" data-copy="link">复制链接</button>
+  <button type="button" data-copy="content">复制正文</button>
 </header>
 <main>
   <h1>${escapeHtml(title)}</h1>
   <p class="hint">只读目录快照 · 由 dsh-share-link 生成</p>
+  <article data-copy-source>
   <ul>
 ${rows}
   </ul>
+  </article>
+  <section class="star">
+    <div class="txt">这份目录由开源插件 <b>dsh-share-link</b> 生成。觉得有用的话，欢迎去仓库点个 Star。</div>
+    <a href="${STAR_URL}" target="_blank" rel="noreferrer">★ 在 GitHub 上点个 Star</a>
+  </section>
 </main>
 ${COPY_SCRIPT}
 </body>

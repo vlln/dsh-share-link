@@ -251,6 +251,14 @@ export const GUIDES = {
     linkText: 'surge.sh',
     command: 'npm i -g surge',
   },
+  surgeVerify: {
+    code: 'surgeVerify',
+    title: '需要先验证 Surge 邮箱',
+    body: 'Surge 给这个账号发了验证邮件。点邮件里的链接，或在终端运行 surge verify 重新发送；验证后同一个域名就能打开。',
+    href: 'https://surge.sh/',
+    linkText: '打开 surge.sh',
+    command: 'surge verify',
+  },
   cfToken: {
     code: 'cfToken',
     title: '命名隧道缺少 token',
@@ -328,9 +336,11 @@ export class ShareManager {
 
   #listen() {
     if (this.server !== null) return Promise.resolve()
-    const named = this.config.tunnelMode === 'named'
+    const namedCapable =
+      this.config.defaultChannel === 'named' ||
+      ((this.config.tunnelToken ?? '') !== '' && (this.config.tunnelHostname ?? '') !== '')
     const requested =
-      Number.isInteger(this.config.port) && this.config.port > 0 ? this.config.port : named ? 3089 : 0
+      Number.isInteger(this.config.port) && this.config.port > 0 ? this.config.port : namedCapable ? 3089 : 0
     return new Promise((resolvePromise, reject) => {
       const server = createServer((request, response) => this.#serve(request, response))
       server.on('error', reject)
@@ -376,42 +386,71 @@ export class ShareManager {
   }
 
   /**
+   * 把通道 id 解析成发布时需要的形态。
+   * @param {string} [id] quick | surge | named | lan；省略时用默认通道
+   */
+  resolveChannel(id) {
+    const requested = id ?? this.config.defaultChannel ?? 'quick'
+    switch (requested) {
+      case 'surge':
+        return { id: 'surge', provider: 'surge' }
+      case 'lan':
+        return { id: 'lan', provider: 'lan' }
+      case 'named':
+        return { id: 'named', provider: 'tunnel', tunnelMode: 'named' }
+      default:
+        return { id: 'quick', provider: 'tunnel', tunnelMode: 'quick' }
+    }
+  }
+
+  /**
    * 通道就绪情况：client 半在打开分享框时就查这个，未就绪直接给引导，而不是等失败。
    * @returns {Promise<{provider: string, ready: boolean, guide?: object, detail: string}>}
    */
   async status() {
-    const provider = this.config.provider ?? 'tunnel'
-    if (provider === 'surge') {
-      const binary = await whichTool('surge')
-      if (binary === undefined) {
-        return { provider, ready: false, guide: GUIDES.surgeMissing, detail: '没有 surge 可执行文件' }
-      }
-      // 三种登录态都算：配置里的 token、进程环境里的 SURGE_TOKEN、本机 ~/.netrc。
-      const via =
-        typeof this.config.surgeToken === 'string' && this.config.surgeToken !== ''
-          ? 'config-token'
-          : (process.env.SURGE_TOKEN ?? '') !== ''
-            ? 'env-token'
-            : hasSurgeCredentials()
-              ? 'netrc'
-              : undefined
-      return via === undefined
-        ? { provider, ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
-        : { provider, ready: true, via, detail: via === 'netrc' ? 'surge 本机已登录' : 'surge 已配置 token' }
+    const channels = {}
+    const surge = await this.#surgeStatus()
+    channels.surge = surge
+    channels.quick = { ready: true, detail: '首次分享会自动下载 cloudflared' }
+    channels.lan = { ready: true, detail: '仅同一局域网可访问' }
+    const namedReady =
+      (this.config.tunnelToken ?? '') !== '' && (this.config.tunnelHostname ?? '') !== ''
+    channels.named = namedReady
+      ? { ready: true, detail: `命名隧道 ${this.config.tunnelHostname}` }
+      : (this.config.tunnelToken ?? '') === ''
+        ? { ready: false, guide: GUIDES.cfToken, detail: '缺隧道 token' }
+        : { ready: false, guide: GUIDES.cfHostname, detail: '缺对外域名' }
+
+    const current = this.resolveChannel()
+    const active = channels[current.id] ?? { ready: false, detail: '' }
+    return {
+      default: current.id,
+      channels,
+      provider: current.provider,
+      ready: active.ready,
+      via: active.via,
+      detail: active.detail,
+      guide: active.guide,
     }
-    if (provider === 'tunnel') {
-      if (this.config.tunnelMode === 'named') {
-        if (typeof this.config.tunnelToken !== 'string' || this.config.tunnelToken === '') {
-          return { provider, ready: false, guide: GUIDES.cfToken, detail: '命名隧道缺 token' }
-        }
-        if (typeof this.config.tunnelHostname !== 'string' || this.config.tunnelHostname === '') {
-          return { provider, ready: false, guide: GUIDES.cfHostname, detail: '命名隧道缺 tunnelHostname' }
-        }
-        return { provider, ready: true, detail: `命名隧道 ${this.config.tunnelHostname}` }
-      }
-      return { provider, ready: true, detail: '快速隧道（首次会自动下载 cloudflared）' }
+  }
+
+  async #surgeStatus() {
+    const binary = await whichTool('surge')
+    if (binary === undefined) {
+      return { ready: false, guide: GUIDES.surgeMissing, detail: '没有 surge 可执行文件' }
     }
-    return { provider: 'lan', ready: true, detail: '仅局域网' }
+    // 三种登录态都算：配置里的 token、进程环境里的 SURGE_TOKEN、本机 ~/.netrc。
+    const via =
+      typeof this.config.surgeToken === 'string' && this.config.surgeToken !== ''
+        ? 'config-token'
+        : (process.env.SURGE_TOKEN ?? '') !== ''
+          ? 'env-token'
+          : hasSurgeCredentials()
+            ? 'netrc'
+            : undefined
+    return via === undefined
+      ? { ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
+      : { ready: true, via, detail: via === 'netrc' ? 'surge 本机已登录' : 'surge 已配置 token' }
   }
 
   list() {
@@ -467,6 +506,7 @@ export class ShareManager {
       kind: 'session',
       title,
       body: { 'index.html': html },
+      channel: options.channel,
       ttlHours: options.ttlHours,
       files: messages.length,
     })
@@ -516,6 +556,7 @@ export class ShareManager {
       kind: 'path',
       title,
       body,
+      channel: options.channel,
       ttlHours: options.ttlHours,
       entry,
       source: target,
@@ -593,19 +634,23 @@ export class ShareManager {
 
     const ttlHours = Number.isFinite(input.ttlHours) && input.ttlHours > 0 ? input.ttlHours : this.config.ttlHours ?? 168
 
-    const requested = this.config.provider ?? 'tunnel'
+    const channel = this.resolveChannel(input.channel)
     let origin
     let provider
     let domain
     let degraded = false
     let degradedReason
-    if (requested === 'surge') {
+    if (channel.provider === 'surge') {
       const deployed = await this.#deploySurge(dir, `${this.config.surgePrefix ?? 'dsh-share'}-${id.slice(0, 8)}`)
       origin = deployed.url
       domain = deployed.domain
       provider = 'surge'
+    } else if (channel.provider === 'lan') {
+      await this.#listen()
+      origin = lanAddress(this.port)
+      provider = 'lan'
     } else {
-      await this.#ensureOrigin()
+      await this.#ensureOrigin(channel.tunnelMode)
       origin = this.origin
       provider = this.tunnelOrigin === null ? 'lan' : 'tunnel'
       if (provider === 'lan' && this.degradedReason !== undefined) {
@@ -622,6 +667,7 @@ export class ShareManager {
       createdAt,
       expiresAt: createdAt + ttlHours * 3600 * 1000,
       provider,
+      channel: channel.id,
       domain,
       origin,
       degraded: degraded || undefined,
@@ -658,9 +704,15 @@ export class ShareManager {
       typeof this.config.surgeDomain === 'string' && this.config.surgeDomain !== ''
         ? `${slug}.${this.config.surgeDomain}`
         : `${slug}.surge.sh`
+    let output = ''
     try {
-      await runTool('surge', [dir, domain], this.#toolEnv())
+      output = await runTool('surge', [dir, domain], this.#toolEnv())
+      // Surge 会在"部署成功但域名待验证"时也返回 0——必须读输出，否则用户拿到一个 403 链接。
+      if (/email verification|surge verify/i.test(output)) {
+        throw new ShareError('surge-verify', 'Surge 要求先验证邮箱，链接现在打不开（403）', GUIDES.surgeVerify)
+      }
     } catch (error) {
+      if (error instanceof ShareError) throw error
       const text = String(error?.message ?? error)
       if (/not logged in|login required|unauthor|forbidden|401|403/i.test(text)) {
         throw new ShareError('surge-login', `Surge 没有登录：${text}`, GUIDES.surgeLogin)
@@ -675,19 +727,20 @@ export class ShareManager {
 
   // ------------------------------------------------------------------ tunnel
 
-  async #ensureOrigin() {
-    if (this.tunnelOrigin !== null) return this.tunnelOrigin
-    if ((this.config.provider ?? 'tunnel') !== 'tunnel') return null
+  async #ensureOrigin(mode = 'quick') {
+    if (this.tunnelOrigin !== null && this.tunnelMode === mode) return this.tunnelOrigin
+    // 换模式（quick ↔ named）必须重起 cloudflared：两者的启动参数与域名来源不同。
+    if (this.tunnelOrigin !== null && this.tunnelMode !== mode) await this.#closeTunnel()
     if (this.tunnelStarting !== null) return await this.tunnelStarting
-    this.tunnelStarting = this.#startTunnel().finally(() => {
+    this.tunnelStarting = this.#startTunnel(mode).finally(() => {
       this.tunnelStarting = null
     })
     await this.tunnelStarting
     return this.tunnelOrigin
   }
 
-  async #startTunnel() {
-    if (this.config.tunnelMode === 'named') {
+  async #startTunnel(mode = 'quick') {
+    if (mode === 'named') {
       const token = this.config.tunnelToken
       if (typeof token !== 'string' || token === '') throw new Error('命名隧道缺少 token')
       return await this.#startNamedTunnel(token)
@@ -725,6 +778,14 @@ export class ShareManager {
       return null
     })
     this.tunnelOrigin = origin
+    this.tunnelMode = mode
+    // 快速隧道会自己掉线：掉了就把状态清空，下一次分享自动重起，而不是继续发一个死链接。
+    child.on('exit', () => {
+      if (this.tunnel !== child) return
+      this.tunnel = null
+      this.tunnelOrigin = null
+      this.tunnelMode = null
+    })
     return origin
   }
 
@@ -748,6 +809,7 @@ export class ShareManager {
       throw new Error('cloudflared 命名隧道启动失败：token 无效，或该隧道没有指向本机端口')
     }
     this.tunnelOrigin = `https://${hostname}`
+    this.tunnelMode = 'named'
     return this.tunnelOrigin
   }
 

@@ -341,6 +341,7 @@ function ShareDialog(props) {
   const [revoked, setRevoked] = React.useState(false)
   const [status, setStatus] = React.useState(null)
   const [guide, setGuide] = React.useState(null)
+  const [channel, setChannel] = React.useState(null)
 
   const submit = async () => {
     setBusy(true)
@@ -348,8 +349,8 @@ function ShareDialog(props) {
     try {
       const created =
         typeof absolutePath === 'string' && absolutePath !== ''
-          ? await post('/api/share-link/path', { path: absolutePath })
-          : await post('/api/share-link/session', { sessionId, includeToolCalls: withTools })
+          ? await post('/api/share-link/path', { path: absolutePath, channel })
+          : await post('/api/share-link/session', { sessionId, includeToolCalls: withTools, channel })
       setEntry(created)
     } catch (failure) {
       setError(String(failure?.message ?? failure))
@@ -388,7 +389,10 @@ function ShareDialog(props) {
     fetch('/api/share-link/status')
       .then((response) => (response.ok ? response.json() : null))
       .then((value) => {
-        if (alive && value !== null) setStatus(value)
+        if (alive && value !== null) {
+          setStatus(value)
+          setChannel((current) => current ?? value.default ?? 'quick')
+        }
       })
       .catch(() => {})
     return () => {
@@ -405,7 +409,10 @@ function ShareDialog(props) {
   }, [onClose])
 
   const target = typeof absolutePath === 'string' && absolutePath !== '' ? absolutePath : null
-  const blocked = status !== null && status.ready === false
+  const channels = status?.channels ?? {}
+  const activeChannel = channel ?? status?.default ?? 'quick'
+  const activeReady = channels[activeChannel]?.ready !== false
+  const blocked = status !== null && !activeReady
   const expires =
     entry !== null ? new Date(entry.expiresAt).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : ''
 
@@ -441,7 +448,35 @@ function ShareDialog(props) {
       h(
         'div',
         { 'data-dsh-share-body': true },
-        status !== null && status.ready === false && entry === null ? h(GuidePanel, { guide: status.guide, t }) : null,
+        status === null || entry !== null
+          ? null
+          : h(
+              'div',
+              { 'data-dsh-share-channels': true, style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 } },
+              ['quick', 'surge', 'named', 'lan'].map((id) =>
+                h(
+                  'button',
+                  {
+                    key: id,
+                    type: 'button',
+                    'data-dsh-share-channel': id,
+                    'data-active': id === activeChannel ? 'true' : 'false',
+                    disabled: channels[id]?.ready === false,
+                    title: channels[id]?.ready === false ? channels[id]?.detail ?? '' : '',
+                    onClick: () => setChannel(id),
+                    style: {
+                      height: 28, padding: '0 11px', borderRadius: 8, fontSize: 12.5, cursor: channels[id]?.ready === false ? 'not-allowed' : 'pointer',
+                      border: id === activeChannel ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '1px solid var(--dsw-alias-border-secondary, #e3e3ea)',
+                      background: id === activeChannel ? 'var(--dsw-alias-bg-layer-1, #f7f7fa)' : 'transparent',
+                      color: channels[id]?.ready === false ? '#b6b6bf' : id === activeChannel ? 'var(--dsw-alias-text-primary, #1d1d22)' : 'var(--dsw-alias-text-secondary, #5f5f6b)',
+                      fontWeight: id === activeChannel ? 600 : 400,
+                    },
+                  },
+                  tr(`ch.${id}`, id),
+                ),
+              ),
+            ),
+        status !== null && !activeReady && entry === null ? h(GuidePanel, { guide: channels[activeChannel]?.guide, t }) : null,
         target === null && entry === null
           ? h(
               'label',
@@ -600,6 +635,10 @@ const zh = {
   revoked: '已撤销，链接立即失效。',
   expires: '到期',
   'guide.open': '打开',
+  'ch.quick': '快速隧道',
+  'ch.surge': 'Surge',
+  'ch.named': '命名隧道',
+  'ch.lan': '局域网',
   blocked: '先完成上面的配置',
 }
 
@@ -621,6 +660,10 @@ const en = {
   revoked: 'Revoked — the link no longer works.',
   expires: 'Expires',
   'guide.open': 'Open',
+  'ch.quick': 'Quick tunnel',
+  'ch.surge': 'Surge',
+  'ch.named': 'Named tunnel',
+  'ch.lan': 'LAN',
   blocked: 'Finish the setup above first',
 }
 

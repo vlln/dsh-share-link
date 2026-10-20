@@ -246,11 +246,10 @@ export function SettingsCard(props) {
   const [resetToken, setResetToken] = React.useState(0)
   const [failed, setFailed] = React.useState('')
   const [advanced, setAdvanced] = React.useState(false)
-  const [showToken, setShowToken] = React.useState(false)
   const [status, setStatus] = React.useState(null)
-  const channel = channelOf(state.value ?? {})
+  const [openSection, setOpenSection] = React.useState(null)
+  const channel = state.value?.defaultChannel ?? 'quick'
 
-  // 钩子必须先于任何提前 return（view 分支 / 未就绪），否则切视图时钩子顺序会变。
   React.useEffect(() => {
     let alive = true
     fetch('/api/share-link/status')
@@ -275,21 +274,8 @@ export function SettingsCard(props) {
       setResetToken((n) => n + 1)
     })
   }
-  const pickChannel = (id) => {
-    const target = CHANNELS.find((item) => item.id === id)
-    if (target === undefined) return
-    commit('provider', target.provider)
-    if (target.id === 'quick' || target.id === 'named') commit('tunnelMode', target.id)
-  }
+  const readiness = (id) => status?.channels?.[id]
 
-  // 本机已登录 Surge 时，步骤与入口都不再需要（还有 "改用 token" 的出口）。
-  const settled =
-    channel === 'surge' && status !== null && status.ready === true && status.via === 'netrc' &&
-    (state.value.surgeToken ?? '') === '' && !showToken
-  // 已经配好 token 的渠道：步骤与入口也不必再占位置，只留字段本身。
-  const configured = status !== null && status.ready === true && status.via !== undefined && status.via !== 'netrc'
-  const info = CHANNEL_INFO[channel]
-  const steps = info.steps === undefined ? [] : info.steps(t)
   const field = (key) =>
     el(Field, {
       key,
@@ -303,31 +289,89 @@ export function SettingsCard(props) {
       onCommit: (name, value) => commit(name, value),
     })
 
+  /** 可折叠的通道配置块（Surge / 命名隧道）。 */
+  const section = (id, fieldKeys) => {
+    const info = CHANNEL_INFO[id]
+    const ready = readiness(id)
+    const open = openSection === id || (openSection === null && ready !== undefined && ready.ready === false)
+    return el(
+      'div',
+      { key: id, 'data-share-section': id, style: { marginTop: 10, border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: 12 } },
+      el(
+        'button',
+        {
+          type: 'button',
+          onClick: () => setOpenSection((value) => (value === id ? '' : id)),
+          style: {
+            display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '10px 14px',
+            background: 'transparent', border: 0, cursor: 'pointer', textAlign: 'left', color: 'inherit', fontSize: 13,
+          },
+        },
+        el('span', { style: { fontWeight: 500 } }, info.name(t)),
+        el('span', {
+          'data-share-ready': ready === undefined ? 'unknown' : ready.ready ? 'yes' : 'no',
+          style: {
+            fontSize: 11.5, padding: '1px 8px', borderRadius: 999,
+            color: ready?.ready ? '#1f9d63' : '#96631a',
+            background: ready?.ready ? 'rgba(31,157,99,.10)' : 'rgba(183,121,31,.12)',
+          },
+        }, ready === undefined ? t('checking') : ready.ready ? t('ready') : ready.detail),
+        el('span', { style: { flex: 1 } }),
+        el('span', { style: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 12 } }, open ? '▾' : '▸'),
+      ),
+      open
+        ? el(
+            'div',
+            { style: { padding: '0 14px 12px' } },
+            el('p', { style: { margin: '0 0 6px', fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, info.desc(t)),
+            (info.steps === undefined ? [] : info.steps(t)).length === 0
+              ? null
+              : el(
+                  'ol',
+                  { style: { margin: '4px 0 10px', paddingLeft: 18, fontSize: 12.5, lineHeight: 1.9, color: 'var(--dsw-alias-label-secondary)' } },
+                  info.steps(t).map((step, index) => el('li', { key: index }, step)),
+                ),
+            info.link === undefined
+              ? null
+              : el('div', { style: { margin: '0 0 10px' } }, el('a', {
+                  href: info.link.href, target: '_blank', rel: 'noreferrer', 'data-share-outbound': info.link.href,
+                  style: {
+                    display: 'inline-flex', alignItems: 'center', gap: 6, height: 26, padding: '0 10px',
+                    borderRadius: 7, fontSize: 12, textDecoration: 'none', color: 'var(--dsw-alias-brand, #4d6bfe)',
+                    border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
+                  },
+                }, info.link.text(t), ' ↗')),
+            el('div', { style: { display: 'flex', flexDirection: 'column' } }, fieldKeys.map(field)),
+          )
+        : null,
+    )
+  }
+
   return el(
     'div',
     { 'data-dsh-share-link-settings': '', style: { display: 'flex', flexDirection: 'column' } },
 
-    // ---- 就绪状态：先告诉用户"现在能不能分享"
+    // 状态：默认通道能不能用
     status === null
       ? null
       : el(
           'div',
           {
-            'data-share-status': status.ready ? 'ready' : 'blocked',
+            'data-share-status': readiness(channel)?.ready ? 'ready' : 'blocked',
             style: {
               display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10,
               fontSize: 12.5, marginBottom: 16,
-              background: status.ready ? 'rgba(31,157,99,.08)' : 'rgba(183,121,31,.10)',
-              color: status.ready ? '#1f9d63' : '#96631a',
+              background: readiness(channel)?.ready ? 'rgba(31,157,99,.08)' : 'rgba(183,121,31,.10)',
+              color: readiness(channel)?.ready ? '#1f9d63' : '#96631a',
             },
           },
           el('span', { style: { width: 7, height: 7, borderRadius: 999, background: 'currentColor', flex: 'none' } }),
-          el('span', null, status.ready ? `${t('ready')} · ${info.name(t)}` : `${t('notReady')} · ${status.detail}`),
+          el('span', null, `${readiness(channel)?.ready ? t('ready') : t('notReady')} · ${CHANNEL_INFO[channel].name(t)}`),
         ),
 
-    // ---- 渠道选择
-    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '0 0 2px' } }, t('channel.title')),
-    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 10 } }, t('channel.hint')),
+    // 默认通道（不是"当前通道"，只是弹窗里的默认选项）
+    el('div', { style: { fontSize: 13, fontWeight: 500, margin: '0 0 2px' } }, t('default.title')),
+    el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', marginBottom: 10 } }, t('default.hint')),
     el(
       'div',
       { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
@@ -338,9 +382,9 @@ export function SettingsCard(props) {
           disabled,
           'data-share-channel': item.id,
           'data-active': item.id === channel ? 'true' : 'false',
-          onClick: () => pickChannel(item.id),
+          onClick: () => commit('defaultChannel', item.id),
           style: {
-            position: 'relative', height: 32, padding: '0 12px', fontSize: 12.5, borderRadius: 9, cursor: 'pointer',
+            height: 32, padding: '0 12px', fontSize: 12.5, borderRadius: 9, cursor: 'pointer',
             border: item.id === channel ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '0.5px solid var(--dsw-alias-border-l2)',
             background: item.id === channel ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
             color: item.id === channel ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
@@ -350,93 +394,21 @@ export function SettingsCard(props) {
       ),
     ),
 
-    // ---- 选中渠道：一句话说明 + 步骤 + 入口链接
-    el(
-      'div',
-      {
-        'data-share-guide-card': channel,
-        style: {
-          marginTop: 12, padding: '14px 16px', borderRadius: 12,
-          border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)',
-        },
-      },
-      el('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } }, info.name(t)),
-      el('div', { style: { fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, info.desc(t)),
-      steps.length === 0 || settled || configured
-        ? null
-        : el(
-            'ol',
-            { style: { margin: '10px 0 0', paddingLeft: 18, fontSize: 12.5, lineHeight: 1.9, color: 'var(--dsw-alias-label-secondary)' } },
-            steps.map((step, index) => el('li', { key: index }, step)),
-          ),
-      channel === 'surge' && (status === null || status.ready === false)
-        ? el(
-            'div',
-            { style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-            el('code', {
-              style: {
-                font: '11.5px/1.9 ui-monospace, Menlo, monospace', padding: '2px 8px', borderRadius: 6,
-                border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
-              },
-            }, 'surge login'),
-            el(CopyCommand, { command: 'surge login', t }),
-          )
-        : null,
-      info.link === undefined || settled || configured
-        ? null
-        : el(
-            'div',
-            { style: { marginTop: 10 } },
-            el('a', {
-              href: info.link.href,
-              target: '_blank',
-              rel: 'noreferrer',
-              'data-share-outbound': info.link.href,
-              style: {
-                display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, padding: '0 11px',
-                borderRadius: 8, fontSize: 12.5, textDecoration: 'none',
-                color: 'var(--dsw-alias-brand, #4d6bfe)',
-                border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
-              },
-            }, info.link.text(t), ' ↗'),
-          ),
-      // Surge：本机已登录（~/.netrc）就什么都不用填，只给一个"改用 token"的出口
-      settled
-        ? el(
-            'div',
-            { 'data-share-surge-login': 'netrc', style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-            el('span', { style: { fontSize: 12.5, color: '#1f9d63' } }, `✓ ${t('surge.localLogin')}`),
-            el('button', {
-              type: 'button',
-              onClick: () => setShowToken(true),
-              style: { height: 26, padding: '0 9px', borderRadius: 7, border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, cursor: 'pointer' },
-            }, t('surge.useToken')),
-          )
-        : null,
-
-      // 需要的字段直接放在说明卡里，填完就是配好了
-      info.fields.length === 0 || settled
-        ? null
-        : el('div', { style: { display: 'flex', flexDirection: 'column', marginTop: 10 } }, info.fields.map(field)),
-    ),
+    // 各通道自己的配置（互不排斥）
+    section('surge', ['surgeToken']),
+    section('named', ['tunnelToken', 'tunnelHostname']),
 
     failed === '' ? null : el('p', { role: 'status', style: { margin: '10px 0 0', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, t('writeFailed')),
 
-    // ---- 高级（默认收起，普通用户不需要碰）
-    el(
-      'button',
-      {
-        type: 'button',
-        'data-share-advanced': 'toggle',
-        onClick: () => setAdvanced((value) => !value),
-        style: {
-          alignSelf: 'flex-start', marginTop: 14, height: 26, padding: '0 8px', borderRadius: 7,
-          border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)',
-          fontSize: 12, cursor: 'pointer',
-        },
+    el('button', {
+      type: 'button',
+      'data-share-advanced': 'toggle',
+      onClick: () => setAdvanced((value) => !value),
+      style: {
+        alignSelf: 'flex-start', marginTop: 14, height: 26, padding: '0 8px', borderRadius: 7,
+        border: 0, background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', fontSize: 12, cursor: 'pointer',
       },
-      `${advanced ? '▾' : '▸'} ${t('advanced')}`,
-    ),
+    }, `${advanced ? '▾' : '▸'} ${t('advanced')}`),
     advanced
       ? el(
           'div',
@@ -446,7 +418,6 @@ export function SettingsCard(props) {
         )
       : null,
 
-    // ---- 已发布
     el('div', { style: { fontSize: 13, fontWeight: 500, margin: '20px 0 0' } }, t('shares.title')),
     el('div', { style: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('shares.hint')),
     el(SharesPanel, { t }),
@@ -504,6 +475,9 @@ export function registerSettingsCard(ctx) {
 export const zh = {
   summary: '发布渠道、参数与已发布的链接',
   recommended: '推荐',
+  checking: '检查中',
+  'default.title': '默认分享通道',
+  'default.hint': '只决定分享弹窗里默认选中哪个；弹窗里随时可以临时换通道。',
   ready: '可以分享',
   notReady: '还不能分享',
   advanced: '高级设置',
@@ -561,6 +535,9 @@ export const zh = {
 export const en = {
   summary: 'Publishing channels, their settings, and active links',
   recommended: 'recommended',
+  checking: 'checking',
+  'default.title': 'Default channel',
+  'default.hint': 'Only sets what the share dialog preselects; you can switch per share in the dialog.',
   ready: 'Ready to share',
   notReady: 'Not ready yet',
   advanced: 'Advanced',

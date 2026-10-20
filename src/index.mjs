@@ -23,6 +23,7 @@ export const inject = ['tools', 'sessionQuery', 'connection']
 /** 配置项。`port` 传 0 表示随机端口（推荐，避免与宿主端口冲突）。 */
 /** 配置默认值（设置卡与运行时共用同一份，避免两处漂移）。 */
 export const DEFAULTS = Object.freeze({
+  defaultChannel: 'quick',
   provider: 'tunnel',
   tunnelMode: 'quick',
   port: 0,
@@ -37,6 +38,10 @@ export const DEFAULTS = Object.freeze({
 })
 
 export const Config = Schema.object({
+  defaultChannel: Schema.union(['quick', 'surge', 'named', 'lan'])
+    .default(DEFAULTS.defaultChannel)
+    .volatile()
+    .description('分享弹窗里默认选中的通道'),
   provider: Schema.union(['tunnel', 'lan', 'surge'])
     .default(DEFAULTS.provider)
     .volatile()
@@ -162,6 +167,7 @@ export function apply(ctx, config = {}) {
               type: 'boolean',
               description: '是否在快照里保留工具名（结果正文始终不保留）',
             },
+            channel: { type: 'string', description: '通道：quick | surge | named | lan；默认取设置里的默认通道' },
             title: { type: 'string', description: '分享页标题；默认用会话标题' },
             ttl_hours: { type: 'number', description: '链接有效期（小时），默认取插件配置' },
           },
@@ -172,6 +178,7 @@ export function apply(ctx, config = {}) {
             const entry = await manager
               .createSessionShare(sessionId, {
                 includeToolCalls: args.include_tool_calls === true,
+                channel: args.channel,
                 title: args.title,
                 ttlHours: args.ttl_hours,
               })
@@ -194,6 +201,7 @@ export function apply(ctx, config = {}) {
             'Publish a local file or directory (HTML page, Markdown, slides, build output) as a read-only public link. Directories must contain index.html; a single .html file is served at the link root.',
           parameters: {
             path: { type: 'string', required: true, description: '文件或目录路径，绝对路径或相对会话工作目录' },
+            channel: { type: 'string', description: '通道：quick | surge | named | lan；默认取设置里的默认通道' },
             title: { type: 'string', description: '分享页标题；默认用文件名' },
             ttl_hours: { type: 'number', description: '链接有效期（小时）' },
           },
@@ -288,6 +296,7 @@ export function apply(ctx, config = {}) {
     const body = await readJson(request)
     const entry = await manager.createSessionShare(body.sessionId, {
       includeToolCalls: body.includeToolCalls === true,
+      channel: body.channel,
       title: body.title,
       ttlHours: body.ttlHours,
     })
@@ -297,6 +306,7 @@ export function apply(ctx, config = {}) {
   route('/api/share-link/path', ['POST'], async (request) => {
     const body = await readJson(request)
     const entry = await manager.createPathShare(body.path, {
+      channel: body.channel,
       title: body.title,
       ttlHours: body.ttlHours,
       cwd: body.cwd,
