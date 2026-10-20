@@ -511,6 +511,9 @@ export class ShareManager {
   /** 外部发布工具的进程环境（Surge token 从配置注入，不落盘）。 */
   #toolEnv() {
     const env = { ...process.env }
+    if (typeof this.config.surgeLogin === 'string' && this.config.surgeLogin !== '') {
+      env.SURGE_LOGIN = this.config.surgeLogin
+    }
     if (typeof this.config.surgeToken === 'string' && this.config.surgeToken !== '') {
       env.SURGE_TOKEN = this.config.surgeToken
     }

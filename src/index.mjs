@@ -30,6 +30,7 @@ export const Config = Schema.object({
   cloudflaredPath: Schema.string().description('已有 cloudflared 可执行文件路径；留空则自动查找/下载'),
   tunnelToken: Schema.string().description('Cloudflare 命名隧道的 token；填了就产出固定域名链接'),
   tunnelHostname: Schema.string().description('命名隧道绑定的域名，例如 share.example.com'),
+  surgeLogin: Schema.string().description('Surge 账号邮箱；配合 surgeToken 免交互登录'),
   surgeToken: Schema.string().description('Surge token（`surge tokens add`）；只注入给子进程，不落盘'),
   surgeDomain: Schema.string().description('Surge 域名后缀，例如 example.com；留空用 slug.surge.sh'),
   surgePrefix: Schema.string().default('dsh-share').description('Surge 子域前缀，最终域名是 <prefix>-<id>.surge.sh'),
