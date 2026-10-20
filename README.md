@@ -59,9 +59,12 @@ dsh plugin --profile web add @vlln/dsh-share-link
 
 - 顶部一条状态：绿色「可以分享 · 当前渠道」或黄色「还不能分享 · 缺什么」，不用自己判断。
 - 四个渠道按钮，「快速隧道」标着**推荐**——选它就是零配置，dsh 在跑就有链接。
-- 选中渠道后，卡片里直接给**一句话说明 + 编号步骤 + 官方入口按钮**：
+- 选中渠道后，卡片里直接给**一句话说明 + 编号步骤 + 官方入口按钮**；**已经就绪时只剩一行绿字**，不摆任何字段：
 
-![Surge 渠道：步骤与入口](docs/preview-settings-surge.png)
+![Surge 已就绪：什么都不用填](docs/preview-settings-surge.png)
+
+  本机跑过 `surge login`（凭据在 `~/.netrc`）或设了 `SURGE_TOKEN` 环境变量，Surge 就直接可用；
+  想改用 token 才点「Use a token instead」展开输入框。
 
 - 只有该渠道真正需要的字段才出现（Surge 两个、命名隧道两个），其余收进折叠的**高级设置**（端口 / 有效期 / 域名后缀）。
 - 参数**即时写入**：失焦或回车就生效，没有"保存"按钮，也不需要在命令行改 YAML。

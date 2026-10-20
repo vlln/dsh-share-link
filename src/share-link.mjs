@@ -387,13 +387,17 @@ export class ShareManager {
         return { provider, ready: false, guide: GUIDES.surgeMissing, detail: '没有 surge 可执行文件' }
       }
       // 三种登录态都算：配置里的 token、进程环境里的 SURGE_TOKEN、本机 ~/.netrc。
-      const authenticated =
-        (typeof this.config.surgeToken === 'string' && this.config.surgeToken !== '') ||
-        (process.env.SURGE_TOKEN ?? '') !== '' ||
-        hasSurgeCredentials()
-      return authenticated
-        ? { provider, ready: true, detail: 'surge 已登录' }
-        : { provider, ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
+      const via =
+        typeof this.config.surgeToken === 'string' && this.config.surgeToken !== ''
+          ? 'config-token'
+          : (process.env.SURGE_TOKEN ?? '') !== ''
+            ? 'env-token'
+            : hasSurgeCredentials()
+              ? 'netrc'
+              : undefined
+      return via === undefined
+        ? { provider, ready: false, guide: GUIDES.surgeLogin, detail: 'surge 未登录' }
+        : { provider, ready: true, via, detail: via === 'netrc' ? 'surge 本机已登录' : 'surge 已配置 token' }
     }
     if (provider === 'tunnel') {
       if (this.config.tunnelMode === 'named') {

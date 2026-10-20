@@ -42,7 +42,7 @@ const CHANNEL_INFO = {
   surge: {
     name: (t) => t('channel.surge'),
     desc: (t) => t('channel.surge.desc'),
-    fields: ['surgeLogin', 'surgeToken'],
+    fields: ['surgeToken'],
     steps: (t) => [t('step.surge.1'), t('step.surge.2')],
     link: { href: 'https://surge.sh/', text: (t) => t('link.surge') },
   },
@@ -195,6 +195,30 @@ function SharesPanel(props) {
   )
 }
 
+/** 复制一条命令（用在 surge login 这类"必须开终端"的步骤上）。 */
+function CopyCommand(props) {
+  const { command, t } = props
+  const [done, setDone] = React.useState(false)
+  return el('button', {
+    type: 'button',
+    'data-copy-command': command,
+    onClick: async () => {
+      try {
+        await navigator.clipboard.writeText(command)
+        setDone(true)
+        setTimeout(() => setDone(false), 1400)
+      } catch {
+        /* 手动选中即可 */
+      }
+    },
+    style: {
+      height: 26, padding: '0 9px', borderRadius: 7, cursor: 'pointer',
+      border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent',
+      color: 'var(--dsw-alias-label-secondary)', fontSize: 12,
+    },
+  }, done ? t('copied') : t('copy'))
+}
+
 /** 设置卡本体。 */
 export function SettingsCard(props) {
   const state = props.useShareSettings((value) => value)
@@ -202,6 +226,7 @@ export function SettingsCard(props) {
   const [resetToken, setResetToken] = React.useState(0)
   const [failed, setFailed] = React.useState('')
   const [advanced, setAdvanced] = React.useState(false)
+  const [showToken, setShowToken] = React.useState(false)
   const [status, setStatus] = React.useState(null)
   const channel = channelOf(state.value ?? {})
 
@@ -237,6 +262,10 @@ export function SettingsCard(props) {
     if (target.id === 'quick' || target.id === 'named') commit('tunnelMode', target.id)
   }
 
+  // 本机已登录 Surge 时，步骤与入口都不再需要（还有 "改用 token" 的出口）。
+  const settled =
+    channel === 'surge' && status !== null && status.ready === true && status.via === 'netrc' &&
+    (state.value.surgeToken ?? '') === '' && !showToken
   const info = CHANNEL_INFO[channel]
   const steps = info.steps === undefined ? [] : info.steps(t)
   const field = (key) =>
@@ -311,14 +340,27 @@ export function SettingsCard(props) {
       },
       el('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 4 } }, info.name(t)),
       el('div', { style: { fontSize: 12.5, lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' } }, info.desc(t)),
-      steps.length === 0
+      steps.length === 0 || settled
         ? null
         : el(
             'ol',
             { style: { margin: '10px 0 0', paddingLeft: 18, fontSize: 12.5, lineHeight: 1.9, color: 'var(--dsw-alias-label-secondary)' } },
             steps.map((step, index) => el('li', { key: index }, step)),
           ),
-      info.link === undefined
+      channel === 'surge' && (status === null || status.ready === false)
+        ? el(
+            'div',
+            { style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            el('code', {
+              style: {
+                font: '11.5px/1.9 ui-monospace, Menlo, monospace', padding: '2px 8px', borderRadius: 6,
+                border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
+              },
+            }, 'surge login'),
+            el(CopyCommand, { command: 'surge login', t }),
+          )
+        : null,
+      info.link === undefined || settled
         ? null
         : el(
             'div',
@@ -336,8 +378,22 @@ export function SettingsCard(props) {
               },
             }, info.link.text(t), ' ↗'),
           ),
+      // Surge：本机已登录（~/.netrc）就什么都不用填，只给一个"改用 token"的出口
+      settled
+        ? el(
+            'div',
+            { 'data-share-surge-login': 'netrc', style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            el('span', { style: { fontSize: 12.5, color: '#1f9d63' } }, `✓ ${t('surge.localLogin')}`),
+            el('button', {
+              type: 'button',
+              onClick: () => setShowToken(true),
+              style: { height: 26, padding: '0 9px', borderRadius: 7, border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', fontSize: 12, cursor: 'pointer' },
+            }, t('surge.useToken')),
+          )
+        : null,
+
       // 需要的字段直接放在说明卡里，填完就是配好了
-      info.fields.length === 0
+      info.fields.length === 0 || settled
         ? null
         : el('div', { style: { display: 'flex', flexDirection: 'column', marginTop: 10 } }, info.fields.map(field)),
     ),
@@ -437,6 +493,10 @@ export const zh = {
   'step.surge.1': '用邮箱在 surge.sh 注册并登录（免费）',
   'step.surge.2': '在终端运行 surge login；或把 surge tokens add 生成的 token 填到下面',
   'link.surge': '打开 surge.sh',
+  copy: '复制',
+  copied: '已复制',
+  'surge.localLogin': '已使用本机 Surge 登录态，不用填任何东西',
+  'surge.useToken': '改用 token',
   'step.named.1': 'Cloudflare Zero Trust → Networks → Tunnels → 创建隧道',
   'step.named.2': '给隧道加 Public Hostname，指向 localhost:3089',
   'step.named.3': '把隧道 token 和完整域名填到下面',
@@ -488,6 +548,10 @@ export const en = {
   'step.surge.1': 'Sign up / sign in at surge.sh with an email (free)',
   'step.surge.2': 'Run `surge login` in a terminal, or paste a `surge tokens add` token below',
   'link.surge': 'Open surge.sh',
+  copy: 'Copy',
+  copied: 'Copied',
+  'surge.localLogin': 'Using this machine\'s Surge login — nothing to fill in',
+  'surge.useToken': 'Use a token instead',
   'step.named.1': 'Cloudflare Zero Trust → Networks → Tunnels → create a tunnel',
   'step.named.2': 'Add a Public Hostname pointing at localhost:3089',
   'step.named.3': 'Paste the tunnel token and the full hostname below',
