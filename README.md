@@ -18,6 +18,9 @@ dsh plugin --profile web add @vlln/dsh-share-link
 # 装完重启 dsh web 生效
 ```
 
+> 尚未发布到 npm 时，用仓库里的 tarball：`pnpm build && pnpm pack`，然后
+> `dsh plugin --profile web add ./vlln-dsh-share-link-0.1.0.tgz`。
+
 - **前置**：dsh `>= 0.2.0`；macOS / Linux
 - **零配置可用**：默认走云端快速隧道，首次分享会自动下载 `cloudflared`（约 50 MB，需要能访问 GitHub）
 - **卸载**：`dsh plugin --profile web remove @vlln/dsh-share-link`
