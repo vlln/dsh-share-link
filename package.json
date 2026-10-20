@@ -1,6 +1,6 @@
 {
   "name": "@vlln/dsh-share-link",
-  "description": "\u628a\u4f1a\u8bdd\u6216\u4ea7\u7269\u53d1\u5e03\u6210\u53ea\u8bfb\u516c\u7f51\u94fe\u63a5\uff1a\u4f1a\u8bdd\u5feb\u7167\u8131\u654f\u6210\u5355\u9875 HTML\uff0c\u4ea7\u7269\u76ee\u5f55\u539f\u6837\u6258\u7ba1\uff0ccloudflared \u96a7\u9053\u51fa\u94fe\u63a5\u3001\u505c\u5373\u64a4\u9500\u3002",
+  "description": "把会话或产物发布成只读公网链接：对话快照、HTML/Markdown 产物，可换风格、可撤销。",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.mjs",
@@ -11,6 +11,7 @@
     "locale",
     "icon.svg",
     "README.md",
+    "LICENSE",
     "docs"
   ],
   "publishConfig": {
@@ -52,5 +53,25 @@
     "tsdown": "0.22.2",
     "typescript": "^5.9.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "vlln",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "share",
+    "publish",
+    "static-site",
+    "cloudflared",
+    "surge",
+    "snapshot"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vlln/dsh-share-link.git"
+  },
+  "homepage": "https://github.com/vlln/dsh-share-link#readme",
+  "bugs": {
+    "url": "https://github.com/vlln/dsh-share-link/issues"
+  }
 }
