@@ -19,7 +19,6 @@ dsh plugin --profile web add github:vlln/dsh-share-link
 > 发布到 npm 之后就变成 `dsh plugin --profile web add @vlln/dsh-share-link`，也可以直接在
 > **Plugins → Add plugin** 里填包名安装。
 
-- 还没发布到 npm，所以装的是 git 源（构建产物已在仓库里，装完直接用）
 - 卸载：`dsh plugin --profile web remove @vlln/dsh-share-link`
 - 首次分享公网链接会自动下载 `cloudflared`（约 50 MB，需要能访问 GitHub）
 
