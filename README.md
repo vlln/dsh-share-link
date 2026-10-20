@@ -17,7 +17,6 @@
 
 ```sh
 dsh plugin --profile web add @vlln/dsh-share-link
-# 装完重启 dsh web 生效
 ```
 
 > 尚未发布到 npm 时，用仓库里的 tarball：`pnpm build && pnpm pack`，然后
