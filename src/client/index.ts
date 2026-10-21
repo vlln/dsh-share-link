@@ -5,9 +5,12 @@
 //      只读会话快照链接；
 //   2. sidebar.right.tab.document.actions / deliverables.file.actions —— 文件预览
 //      上的分享项，直接把当前文件发布成链接。
+//   2b. 装了 dsh-better-sidebar 时，文件预览归它渲染，上面那个宿主插槽不再挂载——
+//      于是把同一个按钮挂到它的编辑器页头上（见 installNativePreviewIntegration）。
 //
 // 不依赖任何私有 client 服务：只读写宿主 slots / locale，网络走宿主同源路由。
 import React from 'react'
+import { createRoot } from 'react-dom/client'
 
 import { registerSettingsCard } from './settings-card'
 
@@ -331,7 +334,7 @@ function Icon({ path, size = 16 }: { path: string; size?: number }) {
 
 /** 表单/结果共用的分享对话框。 */
 function ShareDialog(props) {
-  const { sessionId, absolutePath, onClose, t } = props
+  const { sessionId, absolutePath, cwd, onClose, t } = props
   const tr = (key, fallback) => (typeof t === 'function' ? t(key) : fallback)
   const [busy, setBusy] = React.useState(false)
   const [entry, setEntry] = React.useState(null)
@@ -349,7 +352,7 @@ function ShareDialog(props) {
     try {
       const created =
         typeof absolutePath === 'string' && absolutePath !== ''
-          ? await post('/api/share-link/path', { path: absolutePath, channel })
+          ? await post('/api/share-link/path', { path: absolutePath, cwd, channel })
           : await post('/api/share-link/session', { sessionId, includeToolCalls: withTools, channel })
       setEntry(created)
     } catch (failure) {
@@ -591,7 +594,9 @@ function FileShareAction(props) {
       'button',
       {
         'data-dsh-share-btn': true,
+        'data-icon-only': props.iconOnly === true ? 'true' : undefined,
         title: label,
+        'aria-label': props.iconOnly === true ? label : undefined,
         onClick: () => setOpen(true),
         type: 'button',
       },
@@ -611,10 +616,134 @@ function FileShareAction(props) {
           'stroke-linecap': 'round',
         }),
       ),
-      h('span', null, label),
+      props.iconOnly === true ? null : h('span', null, label),
     ),
-    open ? h(ShareDialog, { absolutePath, t: props.t, onClose: () => setOpen(false) }) : null,
+    open ? h(ShareDialog, { absolutePath, cwd: props.cwd, t: props.t, onClose: () => setOpen(false) }) : null,
   )
+}
+
+/**
+ * dsh-better-sidebar 接管文件预览后，宿主自己的 `sidebar.right.tab.document.actions`
+ * 不再挂载——它的编辑器 tab 是另一个 tab 类型，页头由插件自己渲染。分享按钮因此消失。
+ *
+ * 这里在它的页头（`_editorHeader`：路径输入框 + 保存/刷新/树开关那一行）末尾挂一个
+ * 自管的 React 根，复用同一个 `FileShareAction`。路径从页头的 `input[title]` 读
+ * （树里点开的文件是 cwd 相对路径，搜索结果里是绝对路径），cwd 从客户端会话列表取，
+ * 交给宿主半的 `resolve(cwd, path)`。
+ *
+ * 失效模式同样是**静默降级**：没有 better-sidebar（找不到 `[data-dsh-native-tab-host]`）、
+ * 或它的页头结构变了（类名提示对不上），就什么都不注入，宿主插槽那条路照旧。
+ */
+const NATIVE_TAB_HOST = '[data-dsh-native-tab-host]'
+
+/** 会话 cwd：相对路径要靠它才落到正确的文件上。 */
+function sessionCwd(ctx) {
+  try {
+    const list = ctx.sessions?.list?.getSnapshot?.()
+    if (list === null || list === undefined) return undefined
+    // `list.current` 在"还没有消息的空白会话"上是空的，但侧栏那一行已经是选中的：
+    // 两者都试，谁先给出 id 用谁。
+    const selected = document.querySelector('[data-row-key^="session:"][aria-selected="true"]')?.getAttribute('data-row-key')
+    const id = list.current ?? (typeof selected === 'string' ? selected.slice('session:'.length) : undefined)
+    if (id === undefined) return undefined
+    const cwd = list.byId?.[id]?.cwd
+    return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 把 better-sidebar 的路径（可能相对）补成绝对路径；补不出来时返回 undefined。 */
+function resolveAbsolute(raw, cwd) {
+  if (typeof raw !== 'string' || raw === '') return undefined
+  if (/^(?:[A-Za-z]:[\\/]|\\\\|\/)/u.test(raw)) return raw
+  if (typeof cwd !== 'string' || cwd === '') return undefined
+  const parts = `${cwd}/${raw}`.split(/[\\/]+/u)
+  const out = []
+  for (const part of parts) {
+    if (part === '' || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  const drive = /^[A-Za-z]:/u.exec(cwd)?.[0]
+  return drive === undefined ? `/${out.join('/')}` : `${drive}/${out.join('/')}`
+}
+
+/** better-sidebar 的编辑器页头：路径输入框所在的那一行。 */
+function editorHeaderOf(host) {
+  const input = host.querySelector('input[title]')
+  if (input === null) return undefined
+  const header = input.parentElement
+  if (header === null) return undefined
+  const hint = `${typeof header.className === 'string' ? header.className : ''} ${input.className}`
+  if (!/_editorHeader/u.test(hint) && !/_editorPathInput/u.test(hint)) return undefined
+  return { header, input }
+}
+
+/** 注入到 better-sidebar 页头的按钮（不需要拿它的 React 组件，只借页面位置）。 */
+function NativeFileShare(props) {
+  const absolutePath = resolveAbsolute(props.path, props.cwd)
+  if (absolutePath === undefined) return null
+  return h(FileShareAction, { absolutePath, cwd: props.cwd, iconOnly: true, t: props.t })
+}
+
+function installNativePreviewIntegration(ctx) {
+  if (typeof document === 'undefined') return () => {}
+  const mounts = new Map()
+  let scheduled = 0
+  const t = (key) => (uiLanguage() === 'zh' ? zh[key] : en[key])
+
+  const sync = () => {
+    scheduled = 0
+    const hosts = [...document.querySelectorAll(NATIVE_TAB_HOST)]
+    const cwd = hosts.length === 0 ? undefined : sessionCwd(ctx)
+    const seen = new Set()
+    for (const host of hosts) {
+      const found = editorHeaderOf(host)
+      if (found === undefined) continue
+      const { header, input } = found
+      seen.add(header)
+      const mounted = mounts.get(header)
+      if (mounted === undefined) {
+        // HMR/重复激活留下的旧节点先清掉，避免页头里叠两个按钮。
+        header.querySelector('[data-dsh-share-portal]')?.remove()
+        const container = document.createElement('span')
+        container.setAttribute('data-dsh-share-portal', '')
+        header.appendChild(container)
+        const root = createRoot(container)
+        mounts.set(header, { root, container, path: input.title, cwd })
+        root.render(h(NativeFileShare, { path: input.title, cwd, t }))
+        continue
+      }
+      if (mounted.path === input.title && mounted.cwd === cwd) continue
+      mounted.path = input.title
+      mounted.cwd = cwd
+      mounted.root.render(h(NativeFileShare, { path: input.title, cwd, t }))
+    }
+    for (const [header, mounted] of mounts) {
+      if (seen.has(header) && header.isConnected) continue
+      mounted.root.unmount()
+      mounted.container.remove()
+      mounts.delete(header)
+    }
+  }
+
+  const schedule = () => {
+    if (scheduled !== 0) return
+    scheduled = requestAnimationFrame(sync)
+  }
+  const observer = new MutationObserver(schedule)
+  observer.observe(document.body, { childList: true, subtree: true })
+  sync()
+  return () => {
+    observer.disconnect()
+    if (scheduled !== 0) cancelAnimationFrame(scheduled)
+    for (const mounted of mounts.values()) {
+      mounted.root.unmount()
+      mounted.container.remove()
+    }
+    mounts.clear()
+  }
 }
 
 const zh = {
@@ -669,10 +798,11 @@ const en = {
 
 export default {
   name: 'dsh-share-link-client',
-  inject: ['locale', 'slots', 'configForms'],
+  inject: ['locale', 'slots', 'configForms', 'sessions'],
   apply(ctx) {
     ctx.locale.register('share-link', { zh, en })
     ctx.effect(() => installMenuIntegration(), 'share-link: session menu item')
+    ctx.effect(() => installNativePreviewIntegration(ctx), 'share-link: better-sidebar file action')
     ctx.effect(() => registerSettingsCard(ctx), 'share-link: settings card')
 
     // 右上角：与会话日志「···」菜单同排，作为独立的分享图标。

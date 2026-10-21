@@ -18,7 +18,7 @@ export default [
     platform: 'browser',
     dts: false,
     clean: false,
-    external: [/@deepseek-ai\/dsh-client-/, 'react', 'react-dom'],
+    external: [/@deepseek-ai\/dsh-client-/, 'react', 'react-dom', 'react-dom/client'],
     outputOptions: {
       entryFileNames: 'client.js',
       banner: 'window.__ModuleLoader__.load({ id: "@vlln/dsh-share-link", factory: (require) => {',

@@ -59,6 +59,8 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
 右侧栏打开文件 → 工具条上的 **Share**。`.html` 挂在链接根路径；`.md` 渲染成可读页面；目录会生成文件列表页。
 
+> 装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 的话，文件由它的编辑器接管，工具条那一排会换成它自己的页头——分享按钮同样在那一行（最右端的链接图标），点开是同一个弹窗。
+
 ### 配置与样式
 
 ![设置卡](docs/preview-settings.png)
@@ -128,6 +130,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 | dsh 版本 | 状态 |
 |---|---|
 | `0.2.1-rc.1` | ✅ 已验证（2026-10-20）：安装、会话/文件发布、撤销、真实公网访问；两个入口都在真实浏览器里逐屏点过 |
+| 同上 · dsh-better-sidebar `0.28.0` | ✅ 已验证（2026-10-21）：文件预览被它接管后，分享按钮出现在它的编辑器页头 |
 | 同上 · Surge | ✅ 真实账号验证：发布 → 公网 200 → `surge teardown` → 404 |
 | 同上 · 命名隧道 | ⚠️ 隧道可连、参数正确；没有可用域名，公开访问这一段未验证 |
 | 其它版本 | ⚠️ 未验证——升级后若入口不出现，多半是插槽名或工具契约变了 |
