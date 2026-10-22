@@ -23,7 +23,7 @@ import {
 } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, networkInterfaces } from 'node:os'
-import { delimiter, extname, join, relative, resolve, sep } from 'node:path'
+import { delimiter, dirname, extname, join, relative, resolve, sep } from 'node:path'
 
 import { foldSurface } from '@deepseek-ai/dsh-session'
 
@@ -39,6 +39,15 @@ export const LIMITS = {
   maxBytes: 100 * 1024 * 1024,
   maxFiles: 2000,
 }
+
+/** 分享 `.md` 时对图片的约束：本地相对图片原样附带，公网图片发布时内联。 */
+export const MARKDOWN_IMAGES = Object.freeze({
+  maxCount: 24,
+  maxBytesEach: 2 * 1024 * 1024,
+  maxBytesTotal: 8 * 1024 * 1024,
+  timeoutMs: 6000,
+  concurrency: 6,
+})
 
 /**
  * 分享短码的字符集：小写 base36。
@@ -230,6 +239,98 @@ function walkFiles(root, dir, acc = []) {
     acc.push({ name: relative(root, full).split(sep).join('/'), size: statSync(full).size })
   }
   return acc
+}
+
+/**
+ * 从 Markdown 源里挑出图片引用（`![]()` 与 `<img src>`），去重保序。
+ * 只取字符串、不解析 AST：后续的 exists()/HTTP 校验会把链接、正文里的同形文本过滤掉。
+ * @param {string} markdown
+ * @returns {string[]}
+ */
+function collectImageRefs(markdown) {
+  const refs = []
+  const add = (value) => {
+    const ref = value.trim()
+    if (ref === '' || ref.startsWith('data:') || refs.includes(ref)) return
+    refs.push(ref)
+  }
+  for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+["'][^"']*["'])?\s*\)/g)) add(match[1])
+  for (const match of markdown.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)) add(match[1])
+  return refs
+}
+
+/**
+ * 收集 `.md` 引用的本地图片，按「相对 md 的路径」返回 `{path: Buffer}`。
+ *
+ * 分享页在分享根目录，所以保持相对路径不变，`![](docs/a.png)` 就能直接加载，
+ * 不需要改写正文。越界（`../`）、非文件、超过单次分享上限的一律静默跳过。
+ *
+ * @param {string} mdPath
+ * @param {string} markdown
+ * @returns {Record<string, Buffer>}
+ */
+function collectMarkdownAssets(mdPath, markdown) {
+  const root = dirname(mdPath)
+  const assets = {}
+  let bytes = 0
+  for (const ref of collectImageRefs(markdown)) {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('//')) continue
+    let local = ref.split('#')[0].split('?')[0]
+    try {
+      local = decodeURIComponent(local)
+    } catch {
+      /* 非法百分号编码：按原样找文件 */
+    }
+    const full = resolve(root, local)
+    if (!full.startsWith(root + sep)) continue
+    if (!existsSync(full) || !statSync(full).isFile()) continue
+    const size = statSync(full).size
+    if (size > LIMITS.maxBytes || bytes + size > LIMITS.maxBytes) continue
+    bytes += size
+    assets[relative(root, full).split(sep).join('/')] = readFileSync(full)
+  }
+  return assets
+}
+
+/**
+ * 抓公网图片并转成 data URI（徽章大多是几百字节的 SVG）。
+ * 抓不到的留在正文里保持原地址：页面还能显示，只是需要联网——比留个破图强。
+ * @param {string} markdown
+ * @returns {Promise<Map<string, string>>}
+ */
+async function fetchRemoteImages(markdown) {
+  const urls = collectImageRefs(markdown)
+    .filter((ref) => /^https?:\/\//i.test(ref))
+    .slice(0, MARKDOWN_IMAGES.maxCount)
+  const images = new Map()
+  let total = 0
+  for (let index = 0; index < urls.length; index += MARKDOWN_IMAGES.concurrency) {
+    const batch = urls.slice(index, index + MARKDOWN_IMAGES.concurrency)
+    const loaded = await Promise.all(batch.map((url) => fetchImage(url).catch(() => undefined)))
+    for (const [offset, dataUri] of loaded.entries()) {
+      if (dataUri === undefined) continue
+      const size = Math.ceil((dataUri.length * 3) / 4)
+      if (total + size > MARKDOWN_IMAGES.maxBytesTotal) continue
+      total += size
+      images.set(batch[offset], dataUri)
+    }
+  }
+  return images
+}
+
+/**
+ * 取一张公网图片，校验类型与体积后转成 data URI。
+ * @param {string} url
+ * @returns {Promise<string|undefined>}
+ */
+async function fetchImage(url) {
+  const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(MARKDOWN_IMAGES.timeoutMs) })
+  if (!response.ok) return undefined
+  const type = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+  if (!type.startsWith('image/')) return undefined
+  const buffer = Buffer.from(await response.arrayBuffer())
+  if (buffer.byteLength > MARKDOWN_IMAGES.maxBytesEach) return undefined
+  return `data:${type};base64,${buffer.toString('base64')}`
 }
 
 /**
@@ -640,11 +741,16 @@ export class ShareManager {
       body['index.html'] = readFileSync(target, 'utf8')
     } else if (/\.md$/i.test(target)) {
       const name = target.split(sep).at(-1) ?? 'document'
+      const markdown = readFileSync(target, 'utf8')
+      // 相对图片（`![](docs/a.png)`）按 md 所在目录解析后一起发布：只拷同目录树内的
+      // 文件，`..` 越界一律忽略；公网图片（徽章）发布时抓下来内联成 data URI。
+      Object.assign(body, collectMarkdownAssets(target, markdown))
       body['index.html'] = renderMarkdownDocument({
         title: name.replace(/\.md$/i, ''),
-        markdown: readFileSync(target, 'utf8'),
+        markdown,
         theme: this.config.pageTheme,
         customCss: this.config.pageThemeCss,
+        images: await fetchRemoteImages(markdown),
       })
     } else {
       const name = target.split(sep).at(-1) ?? 'file'
@@ -730,7 +836,9 @@ export class ShareManager {
           cpSync(/** @type {string} */ (content), dir, { recursive: true })
           continue
         }
-        writeFileSync(join(dir, name), /** @type {string|Buffer} */ (content))
+        const file = join(dir, name)
+        mkdirSync(dirname(file), { recursive: true })
+        writeFileSync(file, /** @type {string|Buffer} */ (content))
       }
 
       const ttlHours = Number.isFinite(input.ttlHours) && input.ttlHours > 0 ? input.ttlHours : this.config.ttlHours ?? 168

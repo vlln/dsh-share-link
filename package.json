@@ -1,7 +1,7 @@
 {
   "name": "@vlln/dsh-share-link",
   "description": "把会话或产物发布成只读公网链接：对话快照、HTML/Markdown 产物，可换风格、可撤销。",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "main": "lib/index.mjs",
   "icon": "./icon.svg",
@@ -51,6 +51,7 @@
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
+    "markdown-it": "^15.0.3",
     "tsdown": "0.22.2",
     "typescript": "^5.9.3"
   },

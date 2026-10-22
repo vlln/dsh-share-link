@@ -7,6 +7,139 @@
  * @module dsh-share-link/session-page
  */
 
+import MarkdownIt from 'markdown-it'
+
+/**
+ * `.md` 分享专用的渲染器。
+ *
+ * 与 `renderBody`（会话正文）刻意分开：助手输出不该被当成 HTML 解释——那会把
+ * 「模型随手写了个 `<div>`」变成页面结构。而 README 这类产物是用户自己写的
+ * 文件，`<h1 align="center">`、徽章、`<details>` 必须照原样呈现，否则整块会变成
+ * 一行转义文本（实测就是这么坏的）。
+ *
+ * 渲染结果仍然过 `sanitizeHtml`：允许排版标签，不允许脚本、样式与表单。
+ */
+const DOC_MD = new MarkdownIt({ html: true, linkify: true, breaks: false })
+
+// .md 里的代码块复用会话页那套「语言标签 + 复制按钮」外壳，观感一致；
+// 复制按钮依赖 `.code` 容器与 `data-copy="code"`，这两者由 sanitize 白名单放行。
+DOC_MD.renderer.rules.fence = (tokens, index) => {
+  const token = tokens[index]
+  const lang = token.info.trim().split(/\s+/)[0] ?? ''
+  const code = escapeHtml(token.content.replace(/\n$/, ''))
+  return (
+    '<div class="code"><div class="code-bar">' +
+    `<span>${escapeHtml(lang === '' ? 'code' : lang)}</span>` +
+    '<button type="button" data-copy="code">复制</button></div>' +
+    `<pre><code data-lang="${escapeHtml(lang)}">${code}</code></pre></div>`
+  )
+}
+
+/**
+ * 允许出现在分享页里的标签：GitHub README 的常见排版集合。
+ *
+ * 显式不含 `script` / `style` / `iframe` / `object` / `embed` / `form` / `input`：
+ * 分享页是别人打开的只读页面，唯一允许执行的脚本是插件自己的复制按钮。
+ */
+const ALLOWED_TAGS = new Set([
+  'a', 'abbr', 'b', 'big', 'blockquote', 'br', 'button', 'caption', 'center', 'code', 'dd', 'del', 'details',
+  'div', 'dl', 'dt', 'em', 'figcaption', 'figure', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i',
+  'img', 'ins', 'kbd', 'li', 'mark', 'ol', 'p', 'picture', 'pre', 's', 'small', 'source', 'span',
+  'strong', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul',
+  'video', 'audio',
+])
+
+/** 自闭合标签：`<br>` 这类不需要（也不允许）配对。 */
+const VOID_TAGS = new Set(['br', 'hr', 'img', 'source', 'wbr'])
+
+/** 允许保留的属性；`on*` 一律不在名单里，所以事件处理器会被丢掉。 */
+const ALLOWED_ATTRS = new Set([
+  'align', 'alt', 'class', 'colspan', 'controls', 'data-copy', 'data-lang', 'height', 'href', 'loading',
+  'poster', 'rowspan', 'src', 'start', 'title', 'type', 'valign', 'width',
+])
+
+/** 需要校验协议的属性（`javascript:` 之类必须挡掉）。 */
+const URL_ATTRS = new Set(['href', 'src', 'poster'])
+
+/**
+ * 过滤一段 HTML：只留白名单标签与属性。
+ *
+ * 这是**字符串级**过滤，不是 HTML 解析器——够用是因为输入只来自 markdown-it 的
+ * 输出（结构已知、文本已转义），而它要挡的东西很具体：脚本、内联事件、
+ * `javascript:` 协议、以及 `<style>` 这类能整页变形的块。
+ *
+ * @param {string} html
+ * @returns {string}
+ */
+export function sanitizeHtml(html) {
+  return String(html)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(script|style|iframe|object|embed|form|textarea|template)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<\/?[a-zA-Z][^>]*>/g, (tag) => filterTag(tag))
+}
+
+/** @param {string} tag @returns {string} */
+function filterTag(tag) {
+  const inner = tag.replace(/>$/, '').replace(/^</, '')
+  const selfClosing = inner.endsWith('/')
+  const body = selfClosing ? inner.slice(0, -1) : inner
+  const nameMatch = /^\/?\s*([a-zA-Z][a-zA-Z0-9-]*)/.exec(body)
+  if (nameMatch === null) return ''
+  const name = nameMatch[1].toLowerCase()
+  if (!ALLOWED_TAGS.has(name)) return ''
+  if (body.startsWith('/')) return VOID_TAGS.has(name) ? '' : `</${name}>`
+
+  const attributes = []
+  const attrRe = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g
+  for (const match of body.slice(nameMatch[0].length).matchAll(attrRe)) {
+    const key = match[1].toLowerCase()
+    const value = match[2] ?? match[3] ?? match[4]
+    if (!ALLOWED_ATTRS.has(key)) continue
+    if (value === undefined) {
+      attributes.push(key)
+      continue
+    }
+    if (URL_ATTRS.has(key) && !isSafeUrl(value)) continue
+    attributes.push(`${key}="${value}"`)
+  }
+  const open = `<${name}${attributes.length === 0 ? '' : ` ${attributes.join(' ')}`}>`
+  return open
+}
+
+/**
+ * 只放行 http(s) / mailto / 站内相对路径 / `data:image/*`。
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isSafeUrl(value) {
+  const url = value.trim().toLowerCase()
+  if (url === '') return false
+  const scheme = /^([a-z][a-z0-9+.-]*):/.exec(url)
+  if (scheme === null) return true
+  if (scheme[1] === 'http' || scheme[1] === 'https' || scheme[1] === 'mailto') return true
+  return scheme[1] === 'data' && url.startsWith('data:image/')
+}
+
+/**
+ * 把发布时抓下来的公网图片（`{url: dataUri}`）替换进 `<img src>`。
+ *
+ * 放在 sanitize 之后做：data URI 是我们自己构造的、字节是校验过的图片内容，
+ * 不需要再过一遍白名单；而不替换就等于页面要去外网加载图片，破坏「离线可读」。
+ *
+ * @param {string} html
+ * @param {Map<string, string>} [images]
+ * @returns {string}
+ */
+function substituteImages(html, images) {
+  if (!(images instanceof Map) || images.size === 0) return html
+  let output = html
+  for (const [url, dataUri] of images) {
+    output = output.split(`src="${url}"`).join(`src="${dataUri}"`)
+    output = output.split(`src="${escapeHtml(url)}"`).join(`src="${dataUri}"`)
+  }
+  return output
+}
+
 /** 正文里会被脱敏的凭据形态。顺序有意义：先长 token，再泛化键值对。 */
 const SECRET_RULES = [
   [/\b(sk|rk)-[A-Za-z0-9_-]{16,}\b/g, '$1-***'],
@@ -449,8 +582,22 @@ ${COPY_SCRIPT}
 </html>`;
 }
 
+/**
+ * 渲染一个 `.md` 产物。
+ *
+ * 走 markdown-it（服务端渲染，页面本身仍然零脚本、零外链依赖）而不是极简
+ * 手写渲染器：README 里的表格、图片、链接、嵌套列表都是标准 GFM，手写版
+ * 只覆盖了标题/列表/代码块，实际用起来整段会掉成纯文本。
+ *
+ * @param {{title: string, markdown: string, theme?: string, customCss?: string,
+ *   images?: Map<string, string>}} input
+ *   `images` 是「公网图片地址 → data: URI」：发布时抓下来的图在这里替换，
+ *   这样页面依然是离线可打开的。
+ * @returns {string} 完整 HTML。
+ */
 export function renderMarkdownDocument(input) {
-  const { title, markdown, theme, customCss } = input;
+  const { title, markdown, theme, customCss, images } = input;
+  const body = substituteImages(sanitizeHtml(DOC_MD.render(markdown)), images);
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -461,7 +608,15 @@ export function renderMarkdownDocument(input) {
 <style>
 ${PAGE_CSS}
 ${themeCss(theme, customCss)}
-  .doc h1:first-child { margin-top: 0; }
+  .doc h1:first-child, .doc > :first-child { margin-top: 0; }
+  .doc img { max-width: 100%; height: auto; }
+  .doc table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+  .doc th, .doc td { border: 1px solid var(--line); padding: 7px 11px; text-align: left; vertical-align: top; }
+  .doc th { background: var(--code-bg); font-weight: 600; white-space: nowrap; }
+  .doc details { margin: 14px 0; padding: 8px 13px; border: 1px solid var(--line); border-radius: 9px; }
+  .doc summary { cursor: pointer; color: var(--muted); }
+  .doc kbd { font: 12px/1.4 ui-monospace, Menlo, monospace; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--code-bg); }
+  .doc img + br { line-height: 1; }
 </style>
 </head>
 <body>
@@ -472,7 +627,7 @@ ${themeCss(theme, customCss)}
   <button type="button" data-copy="content">复制全文</button>
 </header>
 <main>
-  <article class="doc body" data-copy-source>${renderBody(markdown)}</article>
+  <article class="doc body" data-copy-source>${body}</article>
   <footer>
     <span>由 <a href="${STAR_URL}" target="_blank" rel="noreferrer">dsh-share-link</a> 生成的只读快照</span>
     <span class="grow"></span>
