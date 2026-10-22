@@ -20,7 +20,7 @@ dsh plugin --profile web add github:vlln/dsh-share-link
 > **Plugins → Add plugin** 里填包名安装。
 
 - 卸载：`dsh plugin --profile web remove @vlln/dsh-share-link`
-- 首次分享公网链接会自动下载 `cloudflared`（约 50 MB，需要能访问 GitHub）
+- 首次分享公网链接会自动下载 `cloudflared`（约 20 MB）。下载在打开分享弹窗时就开始，弹窗和设置页都显示进度；网络慢可以先 `brew install cloudflared`，或者直接走 Surge（不需要下载）
 
 ### 装好之后怎么确认
 
@@ -91,7 +91,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
 | 通道 | 地址形态 | 需要什么 | 撤销 |
 |---|---|---|---|
-| 快速隧道（推荐） | `https://随机词.trycloudflare.com` | 无 | 停进程 / 撤销 |
+| 快速隧道 | `https://随机词.trycloudflare.com` | 无（首次要下 20 MB cloudflared） | 停进程 / 撤销 |
 | Surge | `https://dsh-share-<id>.surge.sh` | 免费 Surge 账号（邮箱） | `surge teardown` |
 | 命名隧道 | `https://<你的域名>/s/<短码>/` | Cloudflare + 自有域名 | 停进程 / 撤销 |
 | 局域网 | `http://<内网 IP>:<port>/s/<短码>/` | 无 | 撤销 |
@@ -135,6 +135,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 - `.md` 分享的图片有上限：只拷同目录树内的文件（`../` 越界忽略）、最多 24 张公网图、单张 ≤ 2 MB、合计 ≤ 8 MB；抓取失败的内联不了，会退回外链。
 - 快速隧道的主机名压不下去（Cloudflare 随机给），短码只缩短路径段；想要 `s.你的域名/xxxx` 这种短链必须用命名隧道。
 - 快速隧道的链接**只活在这次进程里**：关机、重启 dsh 后主机名会变，旧地址永久失效，所以启动时会把这些条目连同快照清掉（命名隧道与 Surge 不受影响，地址固定）。
+- 刚生成的快速隧道链接**可能几十秒内打不开**（`trycloudflare.com` 的 DNS 记录偶尔是滞后才生效；太早解析还会被本地 DNS 缓存住 NXDOMAIN，等缓存过期就好）。等一会儿或换个网络再试，不用重新分享。
 
 ## 兼容性
 

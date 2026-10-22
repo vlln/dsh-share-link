@@ -40,6 +40,20 @@ export const LIMITS = {
   maxFiles: 2000,
 }
 
+/**
+ * 首次分享要下载 cloudflared（约 20 MB）。请求里最多等这么久，超过就交出进度、
+ * 让用户重试——把「卡住几十秒没有任何反馈」换成「告诉你在下什么、下到哪」。
+ */
+const WARM_WAIT_MS = 8000
+
+/** 下载参数：前 3 秒跑不到 200 KB 就判慢、换下一个源；15 秒没新数据算卡死。 */
+const DOWNLOAD = Object.freeze({
+  raceMs: 3000,
+  raceBytes: 200 * 1024,
+  stallMs: 15_000,
+  totalMs: 6 * 60 * 1000,
+})
+
 /** 分享 `.md` 时对图片的约束：本地相对图片原样附带，公网图片发布时内联。 */
 export const MARKDOWN_IMAGES = Object.freeze({
   maxCount: 24,
@@ -422,6 +436,14 @@ export const GUIDES = {
     linkText: '打开 Cloudflare Zero Trust',
     command: null,
   },
+  warming: {
+    code: 'tunnel-warming',
+    title: 'cloudflared 正在下载',
+    body: '快速隧道第一次使用要先下载约 20 MB 的 cloudflared；下好之后再用就只需要一两秒。不想等可以改用 Surge（无需下载），或先在本机装好 cloudflared。',
+    href: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/',
+    linkText: '下载 cloudflared',
+    command: 'brew install cloudflared',
+  },
   cfDownload: {
     code: 'cfDownload',
     title: 'cloudflared 不可用',
@@ -462,6 +484,9 @@ export class ShareManager {
     this.tunnel = null
     this.tunnelOrigin = null
     this.tunnelStarting = null
+    /** cloudflared 的预热状态：idle | downloading | ready | failed。 */
+    this.download = { state: 'idle', received: 0, total: 0 }
+    this.downloadTask = null
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -611,7 +636,27 @@ export class ShareManager {
     const channels = {}
     const surge = await this.#surgeStatus()
     channels.surge = surge
-    channels.quick = { ready: true, detail: '首次分享会自动下载 cloudflared' }
+    // 磁盘/PATH 上已经有 cloudflared 时，状态就该显示「已就绪」，而不是「首次要下载」。
+    if (this.download.state === 'idle') {
+      const cached = this.#cachedCloudflared()
+      if (cached !== undefined) this.download = { state: 'ready', received: 1, total: 1, path: cached }
+    }
+    const download = this.downloadInfo()
+    const tunnelReady = this.tunnelOrigin !== null
+    channels.quick = {
+      ready: true,
+      download,
+      tunnel: tunnelReady ? 'ready' : this.tunnelStarting === null ? 'idle' : 'connecting',
+      detail: tunnelReady
+        ? '隧道已连上，发布只需一瞬间'
+        : download.state === 'downloading'
+          ? `正在下载 cloudflared ${download.percent}%（${formatMb(download.received)} / ${formatMb(download.total)}）`
+          : download.state === 'failed'
+            ? `cloudflared 下载失败：${download.error ?? '未知原因'}`
+            : download.state === 'ready'
+              ? 'cloudflared 已就绪，首次发布约 2–5 秒（正在连隧道）'
+              : `首次分享会自动下载 cloudflared（约 ${formatMb(20 * 1024 * 1024)}）`,
+    }
     channels.lan = { ready: true, detail: '仅同一局域网可访问' }
     const namedReady =
       (this.config.tunnelToken ?? '') !== '' && (this.config.tunnelHostname ?? '') !== ''
@@ -634,8 +679,93 @@ export class ShareManager {
     }
   }
 
+  /** 当前 cloudflared 预热状态（给设置页与分享弹窗看进度）。 */
+  downloadInfo() {
+    const { state, received, total, path, error } = this.download
+    const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
+    return { state, received, total, percent, path, error }
+  }
+
+  /**
+   * 预热 cloudflared：把「首次分享要等 20 MB」挪出请求路径。
+   *
+   * 幂等——磁盘缓存、PATH 上的 cloudflared 都算就绪；下载失败后可以再调一次重试。
+   */
+  async warm() {
+    const cached = this.#cachedCloudflared()
+    if (cached !== undefined) {
+      this.download = { state: 'ready', received: 1, total: 1, path: cached }
+      return this.downloadInfo()
+    }
+    if (this.downloadTask === null) {
+      this.download = { state: 'downloading', received: 0, total: 0 }
+      this.downloadTask = downloadCloudflared(join(this.root, 'bin'), (progress) => {
+        this.download = { state: 'downloading', received: progress.received, total: progress.total }
+      })
+        .then((path) => {
+          this.download = { state: 'ready', received: 1, total: 1, path }
+          return path
+        })
+        .catch((error) => {
+          this.download = { state: 'failed', received: 0, total: 0, error: String(error?.message ?? error) }
+          this.ctx.logger?.warn?.(`[share-link] cloudflared 下载失败：${String(error)}`)
+        })
+        .finally(() => {
+          this.downloadTask = null
+        })
+    }
+    await this.downloadTask
+    return this.downloadInfo()
+  }
+
+  /**
+   * 预热快速隧道：先把 cloudflared 准备好，再**把隧道连上**。
+   *
+   * 冷启动实测约 9 秒（握手 + 分配主机名），而用户打开弹窗到点「生成链接」之间
+   * 往往就是这几秒——这段等在这里，不该算在发布上。失败不抛：发布时还会再试。
+   * @returns {Promise<void>}
+   */
+  async prewarm() {
+    const state = await this.warm()
+    if (state.state !== 'ready') return
+    await this.#ensureOrigin('quick').catch((error) => {
+      this.ctx.logger?.warn?.(`[share-link] 隧道预热失败：${String(error)}`)
+    })
+  }
+
+  /** 已经可用的 cloudflared：显式配置 > 缓存 > PATH。 */
+  #cachedCloudflared() {
+    const explicit = this.config.cloudflaredPath
+    if (typeof explicit === 'string' && explicit !== '') return explicit
+    const cached = join(this.root, 'bin', BINARY_NAME)
+    if (existsSync(cached)) return cached
+    return findOnPath('cloudflared')
+  }
+
+  /**
+   * 取一个能用的 cloudflared 可执行文件：缺了就**开始下载并最多等 WARM_WAIT_MS**，
+   * 还没好就抛带进度的引导（`tunnel-warming`），不再让请求无声挂住。
+   * @returns {Promise<string>}
+   */
+  async #cloudflaredBinary() {
+    const cached = this.#cachedCloudflared()
+    if (cached !== undefined) return cached
+    await Promise.race([this.warm(), new Promise((done) => setTimeout(done, WARM_WAIT_MS))])
+    const after = this.#cachedCloudflared()
+    if (after !== undefined) return after
+    const state = this.downloadInfo()
+    if (state.state === 'failed') {
+      throw new ShareError('cf-download', `cloudflared 下载失败：${state.error ?? '未知原因'}`, GUIDES.cfDownload)
+    }
+    throw new ShareError(
+      'tunnel-warming',
+      `cloudflared 还在下载（${state.percent}%，${formatMb(state.received)} / ${formatMb(state.total)}）`,
+      GUIDES.warming,
+    )
+  }
+
   async #surgeStatus() {
-    const binary = await whichTool('surge')
+    const binary = findOnPath('surge')
     if (binary === undefined) {
       return { ready: false, guide: GUIDES.surgeMissing, detail: '没有 surge 可执行文件' }
     }
@@ -989,8 +1119,10 @@ export class ShareManager {
     }
     let binary
     try {
-      binary = await resolveCloudflared(this.root, this.config.cloudflaredPath)
+      binary = await this.#cloudflaredBinary()
     } catch (error) {
+      // 「还在下载」是正常的不耐烦场景，必须把进度交出去；其它错误才降级成局域网。
+      if (error instanceof ShareError) throw error
       this.ctx.logger?.warn?.(`[share-link] cloudflared 不可用，降级为局域网链接：${String(error)}`)
       return
     }
@@ -1040,7 +1172,7 @@ export class ShareManager {
     if (typeof hostname !== 'string' || hostname === '') {
       throw new Error('配置了 tunnelToken 但缺少 tunnelHostname：请填写你在 Cloudflare 上绑定的域名')
     }
-    const binary = await resolveCloudflared(this.root, this.config.cloudflaredPath)
+    const binary = await this.#cloudflaredBinary()
     const child = spawn(binary, ['tunnel', '--no-autoupdate', 'run', '--token', token], {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -1105,78 +1237,109 @@ export class ShareManager {
 }
 
 /**
- * 找到可用的 cloudflared：显式配置 > PATH > 本插件缓存目录 > 现下载。
- * @param {string} root - `$DSH_HOME/share-link`。
- * @param {string} [explicit]
- * @returns {Promise<string>}
- */
-async function resolveCloudflared(root, explicit) {
-  if (typeof explicit === 'string' && explicit !== '') return explicit
-  const cached = join(root, 'bin', BINARY_NAME)
-  if (existsSync(cached)) return cached
-  for (const dir of (process.env.PATH ?? '').split(':')) {
-    const candidate = join(dir, 'cloudflared')
-    if (existsSync(candidate)) return candidate
-  }
-  return await downloadCloudflared(join(root, 'bin'))
-}
-
-/**
- * 下载 cloudflared（仅 macOS/Linux）。走 GitHub Releases，失败时尝试镜像。
+ * 下载 cloudflared 并解压到 `binDir`，返回可执行文件路径。
+ *
+ * 两个源**按顺序试**，但第一个源带「慢速探测」：3 秒内拿不到 200 KB 就换下一个。
+ * 实测同一个网络上 GitHub 直连只有 18 KB/s（20 MB ≈ 18 分钟），ghproxy 有 180 KB/s，
+ * 只换顺序不做探测的话，一部分用户会白等十几分钟。
+ *
  * @param {string} binDir
+ * @param {(progress: {received: number, total: number}) => void} onProgress
  * @returns {Promise<string>}
  */
-async function downloadCloudflared(binDir) {
+async function downloadCloudflared(binDir, onProgress = () => {}) {
   mkdirSync(binDir, { recursive: true })
-  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
-
-  // Windows 的 release 资产是裸 .exe，不需要解压。
-  if (IS_WINDOWS) {
-    const asset = `cloudflared-windows-${arch}.exe`
-    for (const base of [
-      `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
-      `https://ghproxy.net/https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
-    ]) {
-      try {
-        const response = await fetch(base, { redirect: 'follow' })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const binary = join(binDir, BINARY_NAME)
-        writeFileSync(binary, Buffer.from(await response.arrayBuffer()))
-        return binary
-      } catch {
-        /* 换镜像再试 */
-      }
-    }
-    throw new Error('下载 cloudflared.exe 失败')
-  }
-
-  const os = process.platform === 'darwin' ? 'darwin' : 'linux'
-  const asset = `cloudflared-${os}-${arch}.tgz`
-  const bases = [
+  const asset = cloudflaredAsset()
+  const archive = join(binDir, `${asset}.tmp`)
+  const sources = [
     `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
     `https://ghproxy.net/https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`,
   ]
   const errors = []
-  for (const url of bases) {
+  for (const [index, url] of sources.entries()) {
     try {
-      const response = await fetch(url, { redirect: 'follow' })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const archive = join(binDir, `${asset}.tmp`)
-      writeFileSync(archive, Buffer.from(await response.arrayBuffer()))
-      await new Promise((done, fail) => {
-        const tar = spawn('tar', ['-xzf', archive, '-C', binDir], { stdio: 'inherit' })
-        tar.on('exit', (code) => (code === 0 ? done() : fail(new Error(`tar 退出 ${code}`))))
-        tar.on('error', fail)
-      })
-      rmSync(archive, { force: true })
-      const binary = join(binDir, 'cloudflared')
-      if (!existsSync(binary)) throw new Error('解压后没有 cloudflared')
-      return binary
+      await downloadTo(url, archive, onProgress, { probe: index === 0 })
+      break
     } catch (error) {
-      errors.push(`${url}: ${String(error)}`)
+      errors.push(`${url}: ${String(error?.message ?? error)}`)
+      if (index === sources.length - 1) throw new Error(`下载 cloudflared 失败\n${errors.join('\n')}`)
     }
   }
-  throw new Error(`下载 cloudflared 失败\n${errors.join('\n')}`)
+
+  // Windows 的 release 资产是裸 .exe，不需要解压。
+  if (IS_WINDOWS) {
+    const binary = join(binDir, BINARY_NAME)
+    writeFileSync(binary, readFileSync(archive))
+    rmSync(archive, { force: true })
+    return binary
+  }
+  await new Promise((done, fail) => {
+    const tar = spawn('tar', ['-xzf', archive, '-C', binDir], { stdio: 'inherit' })
+    tar.on('exit', (code) => (code === 0 ? done() : fail(new Error(`tar 退出 ${code}`))))
+    tar.on('error', fail)
+  })
+  rmSync(archive, { force: true })
+  const binary = join(binDir, 'cloudflared')
+  if (!existsSync(binary)) throw new Error('解压后没有 cloudflared')
+  return binary
+}
+
+/** @returns {string} 当前平台对应的 release 资产名。 */
+function cloudflaredAsset() {
+  const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
+  if (IS_WINDOWS) return `cloudflared-windows-${arch}.exe`
+  const os = process.platform === 'darwin' ? 'darwin' : 'linux'
+  return `cloudflared-${os}-${arch}.tgz`
+}
+
+/**
+ * 把一个 URL 下载到文件，带进度回调、卡死探测与总超时。
+ * @param {string} url
+ * @param {string} file
+ * @param {(progress: {received: number, total: number}) => void} onProgress
+ * @param {{probe?: boolean}} [options] - `probe`：前 raceMs 内不到 raceBytes 就主动放弃
+ * @returns {Promise<void>}
+ */
+async function downloadTo(url, file, onProgress, options = {}) {
+  const controller = new AbortController()
+  let received = 0
+  let stall
+  const arm = () => {
+    clearTimeout(stall)
+    stall = setTimeout(() => controller.abort(new Error(`${DOWNLOAD.stallMs / 1000}s 没有新数据`)), DOWNLOAD.stallMs)
+  }
+  const hardStop = setTimeout(() => controller.abort(new Error('下载超时')), DOWNLOAD.totalMs)
+  const probe =
+    options.probe === true
+      ? setTimeout(() => {
+          if (received < DOWNLOAD.raceBytes) controller.abort(new Error(`太慢（${received} B / ${DOWNLOAD.raceMs / 1000}s）`))
+        }, DOWNLOAD.raceMs)
+      : undefined
+  try {
+    arm()
+    const response = await fetch(url, { redirect: 'follow', signal: controller.signal })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    const total = Number(response.headers.get('content-length') ?? 0)
+    const chunks = []
+    for await (const chunk of response.body) {
+      received += chunk.length
+      chunks.push(chunk)
+      arm()
+      onProgress({ received, total })
+    }
+    writeFileSync(file, Buffer.concat(chunks))
+  } finally {
+    clearTimeout(stall)
+    clearTimeout(hardStop)
+    clearTimeout(probe)
+  }
+}
+
+/** @param {number} bytes @returns {string} */
+function formatMb(bytes) {
+  if (!(bytes > 0)) return '0 MB'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /**
@@ -1187,7 +1350,8 @@ async function downloadCloudflared(binDir) {
  * @returns {Promise<string>} 合并后的 stdout + stderr。
  */
 export function runTool(name, args, env) {
-  return whichTool(name).then((binary) => new Promise((resolvePromise, reject) => {
+  const binary = findOnPath(name)
+  return new Promise((resolvePromise, reject) => {
     const argv = binary === undefined ? ['--yes', name, ...args] : args
     // Windows 上 `npx` 是 npx.cmd，不经过 shell 直接 spawn 会 ENOENT。
     const child = spawn(binary ?? 'npx', argv, {
@@ -1207,15 +1371,15 @@ export function runTool(name, args, env) {
       if (code === 0) resolvePromise(output)
       else reject(new Error(`${name} 退出 ${code}：${output.slice(-400)}`))
     })
-  }))
+  })
 }
 
 /**
- * 在 PATH 上找可执行文件。
+ * 在 PATH 上找可执行文件（同步：预热与发布路径都要立刻判断）。
  * @param {string} name
- * @returns {Promise<string|undefined>}
+ * @returns {string|undefined}
  */
-async function whichTool(name) {
+function findOnPath(name) {
   const candidates = IS_WINDOWS ? [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name] : [name]
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (dir === '') continue
