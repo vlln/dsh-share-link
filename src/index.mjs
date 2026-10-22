@@ -13,7 +13,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-import { ShareError, ShareManager } from './share-link.mjs'
+import { CODE_LENGTH, ShareError, ShareManager } from './share-link.mjs'
 
 export const name = 'dsh-share-link'
 
@@ -37,6 +37,7 @@ export const DEFAULTS = Object.freeze({
   surgePrefix: 'dsh-share',
   pageTheme: 'paper',
   pageThemeCss: '',
+  idLength: CODE_LENGTH.default,
   toolShareSession: false,
   toolShareArtifact: false,
   toolShareList: false,
@@ -57,6 +58,12 @@ export const Config = Schema.object({
     .volatile()
     .description('quick = cloudflared 临时域名；named = 你在 Cloudflare 自建的固定域名隧道（需要自有域名）'),
   port: Schema.natural().default(DEFAULTS.port).volatile().description('只读分享服务端口，0 = 随机（命名隧道模式下自动用 3089）'),
+  idLength: Schema.natural()
+    .min(CODE_LENGTH.min)
+    .max(CODE_LENGTH.max)
+    .default(DEFAULTS.idLength)
+    .volatile()
+    .description('分享链接里的短码长度：8 位 ≈ 41 bit 熵（默认，够发也够难猜），10 位 ≈ 52 bit，16 位 ≈ 83 bit'),
   ttlHours: Schema.natural().min(1).max(720).default(DEFAULTS.ttlHours).volatile().description('分享链接默认有效期（小时）'),
   cloudflaredPath: Schema.string().default(DEFAULTS.cloudflaredPath).volatile().description('已有 cloudflared 可执行文件路径；留空则自动查找/下载'),
   tunnelToken: Schema.string().default(DEFAULTS.tunnelToken).volatile().description('Cloudflare 命名隧道的 token；填了就产出固定域名链接'),

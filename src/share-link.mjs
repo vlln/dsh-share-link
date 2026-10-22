@@ -40,6 +40,48 @@ export const LIMITS = {
   maxFiles: 2000,
 }
 
+/**
+ * 分享短码的字符集：小写 base36。
+ *
+ * **刻意不用 base62 / base64url**：路径段本身大小写敏感，但聊天软件预览、
+ * 移动端自动大写、人工转述都把 URL 折成小写是常事——一旦大小写被抹平，
+ * 两个不同的 key 就会撞到同一个地址（指向别人的分享）。全小写把这一整类
+ * 失效消掉，代价是每字符 5.17 bit 而不是 6 bit。
+ */
+const CODE_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
+
+/** 短码长度：8 位 ≈ 41.4 bit，10 位 ≈ 51.7 bit，16 位 ≈ 82.7 bit。 */
+export const CODE_LENGTH = Object.freeze({ min: 8, max: 16, default: 8 })
+
+/** @param {unknown} value @returns {number} */
+function normalizeCodeLength(value) {
+  const number = typeof value === 'number' && Number.isInteger(value) ? value : CODE_LENGTH.default
+  return Math.min(CODE_LENGTH.max, Math.max(CODE_LENGTH.min, number))
+}
+
+/**
+ * 生成无偏短码。
+ *
+ * 用**拒绝采样**而不是 `randomBytes(n) % 36`：36 不整除 256，直接取模会让
+ * 前 4 个字符比其余字符多出约 1/7 的概率。252 = 7 × 36，丢掉 >= 252 的
+ * 字节之后 `byte % 36` 严格均匀。
+ *
+ * @param {number} [length]
+ * @returns {string}
+ */
+export function shortCode(length = CODE_LENGTH.default) {
+  const size = normalizeCodeLength(length)
+  let code = ''
+  while (code.length < size) {
+    for (const byte of randomBytes(size * 2)) {
+      if (byte >= 252) continue
+      code += CODE_ALPHABET[byte % 36]
+      if (code.length === size) break
+    }
+  }
+  return code
+}
+
 /** Windows 上可执行文件带扩展名、PATH 分隔符也不同。 */
 const IS_WINDOWS = process.platform === 'win32'
 const BINARY_NAME = IS_WINDOWS ? 'cloudflared.exe' : 'cloudflared'
@@ -649,65 +691,98 @@ export class ShareManager {
    * @param {{kind: string, title: string, body: Record<string, string|Buffer>, ttlHours?: number, entry?: string, source?: string, files?: number}} input
    */
   async #publish(input) {
-    const id = randomBytes(16).toString('hex')
-    const dir = join(this.sharesDir, id)
-    mkdirSync(dir, { recursive: true })
-    for (const [name, content] of Object.entries(input.body)) {
-      if (name === '') {
-        cpSync(/** @type {string} */ (content), dir, { recursive: true })
-        continue
+    const { id, dir } = this.#allocateShareDir()
+    let committed = false
+    try {
+      for (const [name, content] of Object.entries(input.body)) {
+        if (name === '') {
+          cpSync(/** @type {string} */ (content), dir, { recursive: true })
+          continue
+        }
+        writeFileSync(join(dir, name), /** @type {string|Buffer} */ (content))
       }
-      writeFileSync(join(dir, name), /** @type {string|Buffer} */ (content))
+
+      const ttlHours = Number.isFinite(input.ttlHours) && input.ttlHours > 0 ? input.ttlHours : this.config.ttlHours ?? 168
+
+      const channel = this.resolveChannel(input.channel)
+      let origin
+      let provider
+      let domain
+      let degraded = false
+      let degradedReason
+      if (channel.provider === 'surge') {
+        // slug 用**完整短码**：契约里预留的 8 位切片在 idLength > 8 时会让两条
+        // 分享抢同一个 Surge 子域（后部署的静默覆盖前者），所以直接用整个 id。
+        const deployed = await this.#deploySurge(dir, `${this.config.surgePrefix ?? 'dsh-share'}-${id}`)
+        origin = deployed.url
+        domain = deployed.domain
+        provider = 'surge'
+      } else if (channel.provider === 'lan') {
+        await this.#listen()
+        origin = lanAddress(this.port)
+        provider = 'lan'
+      } else {
+        await this.#ensureOrigin(channel.tunnelMode)
+        origin = this.origin
+        provider = this.tunnelOrigin === null ? 'lan' : 'tunnel'
+        if (provider === 'lan' && this.degradedReason !== undefined) {
+          degraded = true
+          degradedReason = this.degradedReason
+        }
+      }
+
+      const createdAt = Date.now()
+      const entry = {
+        id,
+        kind: input.kind,
+        title: input.title,
+        createdAt,
+        expiresAt: createdAt + ttlHours * 3600 * 1000,
+        provider,
+        channel: channel.id,
+        domain,
+        origin,
+        degraded: degraded || undefined,
+        degradedReason,
+        entry: input.entry ?? 'index.html',
+        source: input.source,
+        files: input.files ?? 1,
+      }
+      const index = this.#readIndex()
+      index[id] = entry
+      this.#writeIndex(index)
+      committed = true
+      return { ...entry, url: urlOf(entry) }
+    } finally {
+      // 发布失败（Surge 未登录 / 隧道拒绝）就把刚落的目录收回去：它不在 index 里，
+      // `sweep()` 清不到，留着等于永久占住一个短码。
+      if (!committed) rmSync(dir, { recursive: true, force: true })
     }
+  }
 
-    const ttlHours = Number.isFinite(input.ttlHours) && input.ttlHours > 0 ? input.ttlHours : this.config.ttlHours ?? 168
-
-    const channel = this.resolveChannel(input.channel)
-    let origin
-    let provider
-    let domain
-    let degraded = false
-    let degradedReason
-    if (channel.provider === 'surge') {
-      const deployed = await this.#deploySurge(dir, `${this.config.surgePrefix ?? 'dsh-share'}-${id.slice(0, 8)}`)
-      origin = deployed.url
-      domain = deployed.domain
-      provider = 'surge'
-    } else if (channel.provider === 'lan') {
-      await this.#listen()
-      origin = lanAddress(this.port)
-      provider = 'lan'
-    } else {
-      await this.#ensureOrigin(channel.tunnelMode)
-      origin = this.origin
-      provider = this.tunnelOrigin === null ? 'lan' : 'tunnel'
-      if (provider === 'lan' && this.degradedReason !== undefined) {
-        degraded = true
-        degradedReason = this.degradedReason
+  /**
+   * 分配一条分享的短码与目录。
+   *
+   * **目录创建成功 = 拿到这个 id**：非递归 `mkdir` 的 `EEXIST` 是文件系统给出的
+   * 原子判定，比「先查 index 再创建」可靠——索引与磁盘本来就可能不一致
+   * （`sweep` / `revoke` 各删一边），而并发发布也不会撞。撞了就重摇。
+   *
+   * @returns {{id: string, dir: string}}
+   */
+  #allocateShareDir() {
+    const length = normalizeCodeLength(this.config.idLength)
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const id = shortCode(length)
+      const dir = join(this.sharesDir, id)
+      try {
+        mkdirSync(dir)
+        return { id, dir }
+      } catch (error) {
+        if (/** @type {any} */ (error)?.code !== 'EEXIST') throw error
+        this.ctx.logger?.warn?.(`[share-link] 短码 ${id} 已被占用，重摇`)
       }
     }
-
-    const createdAt = Date.now()
-    const entry = {
-      id,
-      kind: input.kind,
-      title: input.title,
-      createdAt,
-      expiresAt: createdAt + ttlHours * 3600 * 1000,
-      provider,
-      channel: channel.id,
-      domain,
-      origin,
-      degraded: degraded || undefined,
-      degradedReason,
-      entry: input.entry ?? 'index.html',
-      source: input.source,
-      files: input.files ?? 1,
-    }
-    const index = this.#readIndex()
-    index[id] = entry
-    this.#writeIndex(index)
-    return { ...entry, url: urlOf(entry) }
+    throw new Error('无法分配分享短码：连续 8 次与已有目录冲突')
   }
 
   /** 外部发布工具的进程环境（Surge token 从配置注入，不落盘）。 */
@@ -867,7 +942,9 @@ export class ShareManager {
     if (request.method !== 'GET' && request.method !== 'HEAD') return send(405, 'method not allowed')
     if (url.pathname === '/healthz') return send(200, 'ok')
 
-    const match = url.pathname.match(/^\/s\/([a-f0-9]{8,64})(\/.*)?$/)
+    // 短码是小写 base36；长度上限 32 是为了**兼容改造前的 32 位 hex 链接**——
+    // 老 id 是 `[a-f0-9]{32}`，落在新字符集里，已经发出去的地址继续有效。
+    const match = url.pathname.match(/^\/s\/([0-9a-z]{8,32})(\/.*)?$/)
     if (match === null) return send(404, 'not found')
 
     const [, id, rest = '/'] = match
