@@ -93,12 +93,18 @@ const el = h
 function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean }) {
   const { t, disabled } = props
   const [state, setState] = React.useState<any>(null)
+  const [install, setInstall] = React.useState<string | null>(null)
   const [checking, setChecking] = React.useState(false)
+  // 「检查」点过一次之后，按钮显示这次查到的结果，而不是退回一个通用按钮。
+  const [checked, setChecked] = React.useState(false)
 
   const load = async () => {
     try {
       const response = await fetch('/api/share-link/status')
-      if (response.ok) setState((await response.json())?.channels?.quick?.download ?? null)
+      if (!response.ok) return
+      const payload = await response.json()
+      setState(payload?.channels?.quick?.download ?? null)
+      setInstall(typeof payload?.install === 'string' ? payload.install : null)
     } catch {
       /* 宿主还没就绪时忽略 */
     }
@@ -108,7 +114,10 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
     setChecking(true)
     try {
       const response = await fetch('/api/share-link/check', { method: 'POST' })
-      if (response.ok) setState(await response.json())
+      if (response.ok) {
+        setState(await response.json())
+        setChecked(true)
+      }
     } catch {
       /* 忽略：下一轮轮询会纠正 */
     } finally {
@@ -129,13 +138,26 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
   const mb = (bytes: number) => (bytes > 0 ? (bytes / 1048576).toFixed(1) : '0.0')
   const status = state?.state
   const tone = status === 'ready' ? '#1f9d63' : status === 'downloading' ? '#96631a' : '#b7791f'
+  // 版本号只在「还没点过检查」时挂在徽章上：点过之后版本归按钮，避免同一行出现两次。
   const label =
     status === 'ready'
-      ? `${t('cf.ready')}${state.version === undefined ? '' : ` · v${state.version}`}`
+      ? `${t('cf.ready')}${state.version === undefined || checked ? '' : ` · v${state.version}`}`
       : status === 'downloading'
         ? `${t('cf.downloading')} ${state.percent}% · ${mb(state.received)}/${mb(state.total)} MB`
         : status === 'failed'
           ? `${t('cf.failed')}${state.error === undefined ? '' : `: ${state.error}`}`
+          : t('cf.idle')
+
+  // 查过之后按钮本身就是结果：✓ 版本 / 下载百分比 / ✗ 失败；仍然可点 = 再查一次。
+  const resultLabel =
+    status === 'ready'
+      ? state.version === undefined
+        ? `✓ ${t('cf.ready')}`
+        : `✓ v${state.version}`
+      : status === 'downloading'
+        ? `${t('cf.downloading')} ${state.percent}%`
+        : status === 'failed'
+          ? `✗ ${t('cf.failed')}`
           : t('cf.idle')
 
   return el(
@@ -156,18 +178,36 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
         {
           type: 'button',
           'data-share-cf-check': 'true',
+          'data-share-cf-result': checked ? (status ?? 'unknown') : '',
+          title: checked ? t('cf.recheck') : undefined,
           disabled: disabled || checking,
           onClick: check,
           style: {
             height: 26, padding: '0 10px', borderRadius: 7, fontSize: 12, cursor: checking ? 'default' : 'pointer',
             border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
-            color: 'var(--dsw-alias-label-primary)',
+            color: checked && status === 'ready' ? '#1f9d63' : 'var(--dsw-alias-label-primary)',
           },
         },
-        checking ? t('checking') : status === 'failed' ? t('cf.retry') : t('cf.check'),
+        checking ? t('checking') : checked ? resultLabel : status === 'failed' ? t('cf.retry') : t('cf.check'),
       ),
     ),
-    el('div', { style: { marginTop: 4, fontSize: 12, lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } }, t('cf.hint')),
+    el(
+      'div',
+      { style: { marginTop: 4, fontSize: 12, lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } },
+      t('cf.hint'),
+      install === null
+        ? null
+        : el(
+            'span',
+            { style: { marginLeft: 4 } },
+            t('cf.skip'),
+            el(
+              'code',
+              { style: { marginLeft: 4, font: '11.5px/1.5 ui-monospace, Menlo, monospace', padding: '1px 5px', borderRadius: 5, background: 'var(--dsw-alias-bg-layer-2, #f2f2f5)' } },
+              install,
+            ),
+          ),
+    ),
   )
 }
 
@@ -754,7 +794,7 @@ export const zh = {
   'advanced.hint': '一般不用改：端口、默认有效期、Surge 域名后缀。',
   'advanced.hintShort': '端口 / 有效期 / 域名',
   collapse: '收起',
-  'channel.quick.desc': '零配置：dsh 在跑就有链接，重启换域名。适合临时发给别人看一眼。首次使用会自动下载 cloudflared（约 20 MB；网络慢可以先 `brew install cloudflared`）。',
+  'channel.quick.desc': '零配置：dsh 在跑就有链接，重启换域名。适合临时发给别人看一眼。首次使用会自动下载 cloudflared（约 20 MB；网络慢也可以先自己装一个）。',
   'channel.surge.desc': '免费账号即可，得到永久固定域名，随时可撤销。',
   'channel.named.desc': '需要你自己在 Cloudflare 建隧道并绑定域名。没有自有域名请直接选 Surge。',
   'channel.lan.desc': '只在同一局域网可访问，不出公网。',
@@ -788,7 +828,9 @@ export const zh = {
   'cf.idle': '等待下载',
   'cf.check': '检查',
   'cf.retry': '重试下载',
-  'cf.hint': '快速隧道需要一个 cloudflared 可执行文件（约 20 MB）：插件加载时就在后台自动下载，这里能看到进度。想跳过下载可以先 `brew install cloudflared`，插件会直接用它。',
+  'cf.hint': '快速隧道需要一个 cloudflared 可执行文件（约 20 MB）：插件加载时就在后台自动下载，这里能看到进度。只用 Surge 的话不需要它。',
+  'cf.skip': '想跳过下载就自己装一个：',
+  'cf.recheck': '再检查一次',
   'field.port': '分享服务端口',
   'field.port.hint': '0 = 随机端口；命名隧道模式必须固定（默认 3089）。',
   'field.ttlHours': '默认有效期（小时）',
@@ -841,7 +883,7 @@ export const en = {
   'advanced.hint': 'Usually not needed: port, short-code length, default lifetime, Surge domain suffix.',
   'advanced.hintShort': 'port / short code / lifetime / domain',
   collapse: 'Collapse',
-  'channel.quick.desc': 'Zero config: the link lives as long as dsh runs; the hostname changes on restart. On first use it downloads cloudflared (~20 MB); on a slow network install it first with `brew install cloudflared`.',
+  'channel.quick.desc': 'Zero config: the link lives as long as dsh runs; the hostname changes on restart. On first use it downloads cloudflared (~20 MB); on a slow network you can install it yourself first.',
   'channel.surge.desc': 'Free account is enough; you get a stable domain that you can revoke any time.',
   'channel.named.desc': 'Requires a tunnel you create in Cloudflare plus a domain you own. No domain? Pick Surge.',
   'channel.lan.desc': 'Same network only; nothing leaves your machine.',
@@ -875,7 +917,9 @@ export const en = {
   'cf.idle': 'Waiting to download',
   'cf.check': 'Check',
   'cf.retry': 'Retry download',
-  'cf.hint': 'Quick tunnels need the cloudflared binary (~20 MB). It downloads automatically when the plugin loads; progress shows here. To skip it, `brew install cloudflared` first and the plugin will use that.',
+  'cf.hint': 'Quick tunnels need the cloudflared binary (~20 MB). It downloads automatically when the plugin loads; progress shows here. Surge-only setups do not need it.',
+  'cf.skip': 'To skip the download, install it yourself:',
+  'cf.recheck': 'Check again',
   'field.port': 'Share server port',
   'field.port.hint': '0 = random. Named tunnels need a fixed port (3089 by default).',
   'field.ttlHours': 'Default lifetime (hours)',

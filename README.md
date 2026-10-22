@@ -20,7 +20,7 @@ dsh plugin --profile web add github:vlln/dsh-share-link
 > **Plugins → Add plugin** 里填包名安装。
 
 - 卸载：`dsh plugin --profile web remove @vlln/dsh-share-link`
-- 快速隧道需要一个 `cloudflared` 可执行文件（约 20 MB）：**插件加载后就在后台下载**（跑在插件进程里，退出 dsh 即停）。`Plugins → Share Link` 里有「快速隧道依赖」行：下载进度、是否就绪、版本，右侧「检查」按钮可以手动复查/重试。想跳过下载可以先 `brew install cloudflared`，插件会直接用 PATH 上那份；只用 Surge 的话完全不依赖它
+- 快速隧道需要一个 `cloudflared` 可执行文件（约 20 MB）：**插件加载后就在后台下载**（跑在插件进程里，退出 dsh 即停）。`Plugins → Share Link` 里有「快速隧道依赖」行：下载进度、是否就绪、版本；点「检查」之后按钮本身显示查到的结果（`✓ v2026.10.3` / 下载百分比 / `✗ 下载失败`），再点一次就是重新检查。想跳过下载可以先自己装一个——macOS `brew install cloudflared`、Windows `winget install --id Cloudflare.cloudflared -e`、Linux 用官方 deb/rpm 或二进制；装好后插件会直接用 PATH 上那份。只用 Surge 的话完全不依赖它
 
 ### 装好之后怎么确认
 

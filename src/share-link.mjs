@@ -385,6 +385,22 @@ export class ShareError extends Error {
   }
 }
 
+/**
+ * 「自己装一个 cloudflared」的命令，按平台给。
+ *
+ * 插件本身会自动下载，这条只是给想跳过下载的人一个可粘贴的入口。**不要写死
+ * `brew`**：Windows / Linux 用户拿到一条跑不通的命令，比不给更糟。没有公认
+ * 包管理器的平台返回 `null`，由调用方退化成官方下载页链接。
+ *
+ * @param {string} [platform] 仅测试用，默认取 `process.platform`
+ * @returns {string|null}
+ */
+export function installCommand(platform = process.platform) {
+  if (platform === 'darwin') return 'brew install cloudflared'
+  if (platform === 'win32') return 'winget install --id Cloudflare.cloudflared -e'
+  return null
+}
+
 /** 各通道缺配置时的引导文案。链接都指向官方入口，命令可直接复制。 */
 export const GUIDES = {
   surgeLogin: {
@@ -433,7 +449,7 @@ export const GUIDES = {
     body: '快速隧道第一次使用要先下载约 20 MB 的 cloudflared；下好之后再用就只需要一两秒。不想等可以改用 Surge（无需下载），或先在本机装好 cloudflared。',
     href: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/',
     linkText: '下载 cloudflared',
-    command: 'brew install cloudflared',
+    command: installCommand(),
   },
   cfDownload: {
     code: 'cfDownload',
@@ -441,7 +457,7 @@ export const GUIDES = {
     body: '公网链接需要一个 cloudflared 可执行文件。可以自动下载，也可以自己装一个然后填 cloudflaredPath。',
     href: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/',
     linkText: '下载 cloudflared',
-    command: 'brew install cloudflared',
+    command: installCommand(),
   },
 }
 
@@ -628,7 +644,7 @@ export class ShareManager {
 
   /**
    * 通道就绪情况：client 半在打开分享框时就查这个，未就绪直接给引导，而不是等失败。
-   * @returns {Promise<{provider: string, ready: boolean, guide?: object, detail: string}>}
+   * @returns {Promise<{default: string, channels: object, provider: string, ready: boolean, guide?: object, detail: string, install: string|null}>}
    */
   async status() {
     const channels = {}
@@ -674,6 +690,9 @@ export class ShareManager {
       via: active.via,
       detail: active.detail,
       guide: active.guide,
+      // 「自己装一个」的命令随平台变（macOS / Windows / Linux 各不相同），由宿主决定，
+      // 客户端只负责渲染——不要在设置卡里写死 `brew`。
+      install: installCommand(),
     }
   }
 

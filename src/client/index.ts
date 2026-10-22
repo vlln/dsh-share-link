@@ -264,12 +264,12 @@ const GUIDE_COPY: Record<string, { zh: { title: string; body: string; linkText: 
   'tunnel-warming': {
     zh: {
       title: 'cloudflared 还在下载',
-      body: 'cloudflared 还没下完（约 20 MB，装好插件就在独立的后台进程里下载，dsh 重启也不影响）。到 Plugins → Share Link 的「快速隧道依赖」点「检查」看进度，好了再点一次「生成链接」；不想等就切到 Surge —— 它不需要下载。',
+      body: 'cloudflared 还没下完（约 20 MB；装好插件就开始下，跑在插件进程里——退出 dsh 会中断，重启后从头下）。到 Plugins → Share Link 的「快速隧道依赖」点「检查」看进度，好了再点一次「生成链接」；不想等就切到 Surge —— 它不需要下载。',
       linkText: '下载 cloudflared',
     },
     en: {
       title: 'cloudflared is still downloading',
-      body: 'cloudflared is still downloading (~20 MB; a separate background process started it when the plugin loaded, so restarting dsh does not interrupt it). Check progress under Plugins → Share Link → quick-tunnel dependency, then create the link again. Or switch to Surge, which needs no download.',
+      body: 'cloudflared is still downloading (~20 MB). It runs inside the plugin process: quitting dsh stops it, and a restart starts over. Check progress under Plugins → Share Link → quick-tunnel dependency, then create the link again. Or switch to Surge, which needs no download.',
       linkText: 'Download cloudflared',
     },
   },
