@@ -11,16 +11,6 @@ export default [
     external: [/@deepseek-ai\//],
   },
   {
-    // 独立下载进程：与插件进程同时存在，但不共享生命周期（detached 启动）。
-    entry: ['src/download-worker.mjs'],
-    format: 'esm',
-    platform: 'node',
-    target: 'es2024',
-    outDir: 'lib',
-    clean: false,
-    external: [/@deepseek-ai\//],
-  },
-  {
     name: '@vlln/dsh-share-link/client',
     entry: { client: 'src/client/index.ts' },
     outDir: 'lib',

@@ -17,13 +17,15 @@ export const BINARY_NAME = IS_WINDOWS ? 'cloudflared.exe' : 'cloudflared'
 
 /**
  * 下载参数：前 3 秒跑不到 200 KB 就判慢、换下一个源；15 秒没新数据算卡死。
- * 实测同一条网络上 GitHub 直连 18 KB/s（20 MB ≈ 18 分钟）、ghproxy 180 KB/s。
+ *
+ * `totalMs` 是**硬上限**，不是速度判断——晚高峰实测只有 50 KB/s（19.8 MB ≈ 6.6 分钟），
+ * 原来设 6 分钟会在大文件还没下完时把它掐掉（真踩过）。真正防卡死的是 stallMs。
  */
 export const DOWNLOAD = Object.freeze({
   raceMs: 3000,
   raceBytes: 200 * 1024,
   stallMs: 15_000,
-  totalMs: 6 * 60 * 1000,
+  totalMs: 20 * 60 * 1000,
 })
 
 /**

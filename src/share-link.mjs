@@ -23,7 +23,6 @@ import {
 } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, networkInterfaces } from 'node:os'
-import { fileURLToPath } from 'node:url'
 import { delimiter, dirname, extname, join, relative, resolve, sep } from 'node:path'
 
 import { foldSurface } from '@deepseek-ai/dsh-session'
@@ -36,7 +35,6 @@ import {
   formatMb,
   probeVersion,
 } from './cloudflared.mjs'
-import { isPidAlive, readDownloadState, writeDownloadState } from './download-state.mjs'
 
 import {
   redact,
@@ -44,9 +42,6 @@ import {
   renderMarkdownDocument,
   renderSessionPage,
 } from './session-page.mjs'
-
-/** 插件自身目录：`lib/` 下放着 index.mjs 与 download-worker.mjs。 */
-const PLUGIN_DIR = fileURLToPath(new URL('.', import.meta.url))
 
 /** 单文件 / 单目录的体积与数量上限，防止误分享整个 home。 */
 export const LIMITS = {
@@ -480,8 +475,14 @@ export class ShareManager {
     this.tunnel = null
     this.tunnelOrigin = null
     this.tunnelStarting = null
-    /** 只缓存「探测到的版本号」，进度与状态一律读磁盘（下载在独立进程里）。 */
-    this.download = { version: undefined }
+    /**
+     * cloudflared 下载状态：**只活在本进程里**。
+     *
+     * dsh 退出下载就停——不偷偷在后台拉 20 MB；代价是重启后要重下（一次性操作，
+     * 换来的是没有常驻进程、没有状态文件、没有 pid 判定这些额外失败面）。
+     */
+    this.download = { state: 'idle', received: 0, total: 0, version: undefined }
+    this.downloadTask = null
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -491,9 +492,8 @@ export class ShareManager {
     await this.#listen()
     this.sweep()
     this.#dropStaleQuickShares()
-    // 装上就开始下：起一个独立进程（detached）下载 cloudflared，插件只读进度文件。
-    // 只下载，不连隧道——没在用快速隧道的用户不该多一个公网入口和一个常驻进程。
-    this.warm()
+    // 装上就开始下：插件加载即下载，不等用户点分享；只下载，不连隧道。
+    void this.warm()
   }
 
   async stop() {
@@ -677,100 +677,75 @@ export class ShareManager {
     }
   }
 
-  /** 下载进度文件（独立下载进程写的）路径。 */
-  get #downloadStateFile() {
-    return join(this.root, 'bin', 'download.json')
-  }
-
-  /**
-   * cloudflared 的当前状态：**只看磁盘**（二进制是否存在、下载进程写了什么）。
-   *
-   * 插件自己不在内存里维护下载状态——下载是独立进程，dsh 重启也不影响它；
-   * 这里每次读文件，顺便用 pid 判断下载进程是否还活着（进程被杀了就是 failed）。
-   * @returns {{state: string, received: number, total: number, percent: number, path?: string, error?: string, version?: string}}
-   */
+  /** cloudflared 的当前状态（内存快照；下载随本进程生命周期）。 */
   downloadInfo() {
     const cached = this.#cachedCloudflared()
     if (cached !== undefined) {
-      const percent = 100
-      return { state: 'ready', received: 1, total: 1, percent, path: cached, version: this.download.version }
+      return { state: 'ready', received: 1, total: 1, percent: 100, path: cached, version: this.download.version }
     }
-    const file = readDownloadState(this.#downloadStateFile)
-    if (file === undefined) return { state: 'idle', received: 0, total: 0, percent: 0 }
-    const percent = file.total > 0 ? Math.min(100, Math.round((file.received / file.total) * 100)) : 0
-    if (file.state === 'downloading') {
-      if (isPidAlive(file.pid)) {
-        return { state: 'downloading', received: file.received, total: file.total, percent }
-      }
-      return {
-        state: 'failed',
-        received: file.received,
-        total: file.total,
-        percent,
-        error: '下载进程已退出（可能被中断）',
-      }
-    }
-    if (file.state === 'ready' && typeof file.path === 'string' && existsSync(file.path)) {
-      return { state: 'ready', received: 1, total: 1, percent: 100, path: file.path, version: this.download.version }
-    }
-    return {
-      state: file.state === 'failed' ? 'failed' : 'idle',
-      received: file.received ?? 0,
-      total: file.total ?? 0,
-      percent,
-      error: file.error,
-    }
+    const { state, received, total, error } = this.download
+    const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
+    return { state, received, total, percent, error, version: this.download.version }
   }
 
   /**
-   * 起一个**独立**下载进程（detached，写完进度就退出）。
+   * 开始下载 cloudflared（后台、幂等）。
    *
-   * 幂等：已有存活的下载进程、或二进制已就绪，都直接返回当前状态。
-   * @returns {{state: string, received: number, total: number, percent: number}}
+   * 跑在插件进程里：dsh 退出它就停，不会背着你把 20 MB 下完。代价是重启后要重下，
+   * 但这是一次性操作——用「下载进程 + 状态文件 + pid 判定」换这一点并不划算。
+   * @returns {ReturnType<ShareManager['downloadInfo']>}
    */
   warm() {
     const cached = this.#cachedCloudflared()
-    if (cached !== undefined) return this.downloadInfo()
-    const current = this.downloadInfo()
-    if (current.state === 'downloading') return current
-
-    const binDir = join(this.root, 'bin')
-    mkdirSync(binDir, { recursive: true })
-    const worker = join(PLUGIN_DIR, 'download-worker.mjs')
-    if (!existsSync(worker)) {
-      this.ctx.logger?.warn?.(`[share-link] 找不到下载进程 ${worker}，无法预下载 cloudflared`)
+    if (cached !== undefined) {
+      this.download = { state: 'ready', received: 1, total: 1, path: cached, version: this.download.version }
       return this.downloadInfo()
     }
-    const child = spawn(process.execPath, [worker, binDir, this.#downloadStateFile], {
-      detached: true,
-      stdio: 'ignore',
-      env: process.env,
+    if (this.downloadTask !== null) return this.downloadInfo()
+
+    this.download = { state: 'downloading', received: 0, total: 0, version: this.download.version }
+    this.downloadTask = downloadCloudflared(join(this.root, 'bin'), (progress) => {
+      this.download = {
+        state: 'downloading',
+        received: progress.received,
+        total: progress.total,
+        version: this.download.version,
+      }
     })
-    child.unref()
-    // 先落一个「下载中」，避免前端在两批进度之间读到 idle 又开始一次下载。
-    writeDownloadState(this.#downloadStateFile, {
-      state: 'downloading',
-      pid: child.pid ?? null,
-      received: 0,
-      total: 0,
-    })
+      .then(async (path) => {
+        const version = await probeVersion(path)
+        this.download = { state: 'ready', received: 1, total: 1, path, version }
+        return path
+      })
+      .catch((error) => {
+        this.download = {
+          state: 'failed',
+          received: 0,
+          total: 0,
+          error: String(error?.message ?? error),
+          version: this.download.version,
+        }
+        this.ctx.logger?.warn?.(`[share-link] cloudflared 下载失败：${String(error)}`)
+      })
+      .finally(() => {
+        this.downloadTask = null
+      })
     return this.downloadInfo()
   }
 
   /**
    * 设置页的「检查」：确认 cloudflared 在不在、跑不跑得起来、什么版本。
    *
-   * 缺了/失败了就顺手再起一次独立下载进程（手动重试的入口）。
+   * 缺了/失败了就顺手再下一次（手动重试的入口）。
    * @returns {Promise<ReturnType<ShareManager['downloadInfo']>>}
    */
   async check() {
     const current = this.downloadInfo()
     if (current.state === 'ready' && typeof current.path === 'string') {
-      const version = await probeVersion(current.path)
-      this.download = { version }
+      this.download = { ...this.download, version: await probeVersion(current.path) }
       return this.downloadInfo()
     }
-    if (current.state !== 'downloading') this.warm()
+    if (this.downloadTask === null) this.warm()
     return this.downloadInfo()
   }
 
@@ -784,8 +759,8 @@ export class ShareManager {
   }
 
   /**
-   * 取一个能用的 cloudflared。**不同步等下载**：缺了就起独立进程并立刻把
-   * 状态交出去（`tunnel-warming`），要不要等是用户点「检查」的事。
+   * 取一个能用的 cloudflared。**不同步等下载**：缺了就起下载并立刻把进度交出去
+   * （`tunnel-warming`），要不要等是用户点「检查」的事。
    * @returns {Promise<string>}
    */
   async #cloudflaredBinary() {
