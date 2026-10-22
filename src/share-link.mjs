@@ -369,6 +369,7 @@ export class ShareManager {
     mkdirSync(this.sharesDir, { recursive: true })
     await this.#listen()
     this.sweep()
+    this.#dropStaleQuickShares()
   }
 
   async stop() {
@@ -429,6 +430,36 @@ export class ShareManager {
       }
     }
     if (dirty) this.#writeIndex(index)
+  }
+
+  /**
+   * 清掉上一轮进程留下的「快速隧道」分享（连同快照）。
+   *
+   * 快速隧道的主机名是 Cloudflare 每次启动随机给的，进程一退就永不回来——
+   * 这些条目留在索引里只会是死链，而且占着短码。命名隧道不受影响：域名
+   * 固定、端口固定，重启后同一个地址照样有效；Surge 是静态托管，更不受影响。
+   *
+   * 唯一的例外是「快速隧道不可用、降级成局域网」的条目：只要这次监听的
+   * 局域网地址与它记录的 origin 完全一致，它就还有可能活着，留着。
+   *
+   * @returns {number} 清掉的条数
+   */
+  #dropStaleQuickShares() {
+    const index = this.#readIndex()
+    const currentLan = lanAddress(this.port)
+    let dropped = 0
+    for (const [id, entry] of Object.entries(index)) {
+      if (entry.channel !== 'quick') continue
+      if (entry.provider === 'lan' && entry.origin === currentLan) continue
+      rmSync(join(this.sharesDir, id), { recursive: true, force: true })
+      delete index[id]
+      dropped += 1
+    }
+    if (dropped > 0) {
+      this.#writeIndex(index)
+      this.ctx.logger?.debug?.(`[share-link] 清理了 ${dropped} 条上一轮进程留下的快速隧道分享`)
+    }
+    return dropped
   }
 
   /**
@@ -948,7 +979,11 @@ export class ShareManager {
     if (match === null) return send(404, 'not found')
 
     const [, id, rest = '/'] = match
-    if (this.#readIndex()[id] === undefined) return send(404, 'not found')
+    const entry = this.#readIndex()[id]
+    if (entry === undefined) return send(404, 'not found')
+    // 到期即 404，不以 sweep 是否跑过为准：长期运行的进程可能一直没调 list()，
+    // 惰性清理会让「已过期」的链接继续可读。磁盘上的清理仍交给 sweep()。
+    if (typeof entry.expiresAt === 'number' && entry.expiresAt <= Date.now()) return send(404, 'not found')
 
     const base = join(this.sharesDir, id)
     const relative = rest === '/' ? '/index.html' : rest
