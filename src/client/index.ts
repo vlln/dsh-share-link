@@ -3,8 +3,9 @@
 // 两个入口，共用一条「本地发布」通道（同源 POST /api/share-link/*）：
 //   1. conversation.session.header.actions —— 会话「···」菜单里的分享项，产出
 //      只读会话快照链接；
-//   2. sidebar.right.tab.document.actions / deliverables.file.actions —— 文件预览
-//      上的分享项，直接把当前文件发布成链接。
+//   2. sidebar.right.tab.document.actions —— 文件预览上的分享项，直接把当前
+//      文件发布成链接。（`deliverables.file.actions` 那条挂载点不传文件路径，
+//      组件永远渲染 null，已移除。）
 //   2b. 装了 dsh-better-sidebar 时，文件预览归它渲染，上面那个宿主插槽不再挂载——
 //      于是把同一个按钮挂到它的编辑器页头上（见 installNativePreviewIntegration）。
 //
@@ -70,10 +71,22 @@ function installMenuIntegration() {
     wrap.parentElement?.insertBefore(clone, wrap)
   }
 
-  const observer = new MutationObserver(enhance)
+  // 流式输出时 body 每帧都在变：不合帧就是把 querySelectorAll 跑在每一帧上。
+  let scheduled = 0
+  const schedule = () => {
+    if (scheduled !== 0) return
+    scheduled = requestAnimationFrame(() => {
+      scheduled = 0
+      enhance()
+    })
+  }
+  const observer = new MutationObserver(schedule)
   observer.observe(document.body, { childList: true, subtree: true })
   enhance()
-  return () => observer.disconnect()
+  return () => {
+    observer.disconnect()
+    if (scheduled !== 0) cancelAnimationFrame(scheduled)
+  }
 }
 
 const STYLE_ID = 'dsh-share-link-style'
@@ -212,10 +225,14 @@ function ensureStyle() {
 }
 
 async function post(path, body) {
+  // 没有超时的请求会把 `busy` 永久钉在 true（按钮变成不可点），用户只能关弹窗。
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(180_000),
+  }).catch((error) => {
+    throw new Error(error?.name === 'TimeoutError' ? '宿主 180s 内没有响应' : String(error?.message ?? error))
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
@@ -286,13 +303,15 @@ function uiLanguage() {
  */
 function GuidePanel(props) {
   const { guide, t } = props
+  // hook 必须在早返回**之前**：`guide` 从 undefined 变成有值时，条件 hook 会让
+  // React 直接抛 "Rendered more hooks than during the previous render"。
+  const [copied, setCopied] = React.useState(false)
   if (guide === null || guide === undefined) return null
   const tr = (key, fallback) => (typeof t === 'function' ? t(key) : fallback)
   const copyFor = GUIDE_COPY[guide.code]?.[uiLanguage()]
   const title = copyFor?.title ?? guide.title
   const body = copyFor?.body ?? guide.body
   const linkText = copyFor?.linkText ?? guide.linkText
-  const [copied, setCopied] = React.useState(false)
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(guide.command)
@@ -362,12 +381,17 @@ function ShareDialog(props) {
   const submit = async () => {
     setBusy(true)
     setError('')
+    setGuide(null)
     try {
       const created =
         typeof absolutePath === 'string' && absolutePath !== ''
           ? await post('/api/share-link/path', { path: absolutePath, cwd, channel })
           : await post('/api/share-link/session', { sessionId, includeToolCalls: withTools, channel })
       setEntry(created)
+      // 成功之后必须把上一次失败留下的引导清掉：它会一直挂在那里，而且因为
+      // 「有 guide 就不显示原始错误」，还会把后面撤销失败的报错一起吞掉。
+      setGuide(null)
+      setError('')
     } catch (failure) {
       setError(String(failure?.message ?? failure))
       setGuide(failure?.guide ?? null)
@@ -388,12 +412,16 @@ function ShareDialog(props) {
 
   const revoke = async () => {
     setBusy(true)
+    setError('')
+    setGuide(null)
     try {
       await post('/api/share-link/revoke', { id: entry.id })
       setEntry(null)
       setRevoked(true)
+      setGuide(null)
     } catch (failure) {
       setError(String(failure?.message ?? failure))
+      setGuide(failure?.guide ?? null)
     } finally {
       setBusy(false)
     }
@@ -563,9 +591,15 @@ function ShareDialog(props) {
           ? null
           : h(
               'div',
-              { 'data-dsh-share-status': true, 'data-tone': 'ok' },
+              { 'data-dsh-share-status': true, 'data-tone': entry.degraded === true ? 'warn' : 'ok' },
               h('span', { className: 'dot' }),
-              h('span', null, `${copied ? tr('copied', 'Copied') : tr('ok', 'Link created — ready to send.')} · ${tr('expires', 'Expires')} ${expires}`),
+              h(
+                'span',
+                null,
+                entry.degraded === true
+                  ? tr('ok.lan', 'Tunnel unavailable — this link only works on your local network.')
+                  : `${copied ? tr('copied', 'Copied') : tr('ok', 'Link created — ready to send.')} · ${tr('expires', 'Expires')} ${expires}`,
+              ),
               h('span', { className: 'grow' }),
               h('button', { type: 'button', disabled: busy, onClick: revoke }, tr('revoke', 'Revoke')),
             ),
@@ -697,10 +731,10 @@ function sessionCwd(ctx) {
   try {
     const list = ctx.sessions?.list?.getSnapshot?.()
     if (list === null || list === undefined) return undefined
-    // `list.current` 在"还没有消息的空白会话"上是空的，但侧栏那一行已经是选中的：
-    // 两者都试，谁先给出 id 用谁。
+    // 快照里没有 `current` 字段（只有 ids/byId/phase），所以只认侧栏选中行；
+    // 选中行拿不到就返回 undefined，让调用方放弃这次注入，别猜。
     const selected = document.querySelector('[data-row-key^="session:"][aria-selected="true"]')?.getAttribute('data-row-key')
-    const id = list.current ?? (typeof selected === 'string' ? selected.slice('session:'.length) : undefined)
+    const id = typeof selected === 'string' ? selected.slice('session:'.length) : undefined
     if (id === undefined) return undefined
     const cwd = list.byId?.[id]?.cwd
     return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
@@ -714,14 +748,16 @@ function resolveAbsolute(raw, cwd) {
   if (typeof raw !== 'string' || raw === '') return undefined
   if (/^(?:[A-Za-z]:[\\/]|\\\\|\/)/u.test(raw)) return raw
   if (typeof cwd !== 'string' || cwd === '') return undefined
-  const parts = `${cwd}/${raw}`.split(/[\\/]+/u)
+  const drive = /^[A-Za-z]:/u.exec(cwd)?.[0]
+  // 盘符必须从路径里剥掉再分段：否则 `C:/u/p` + `docs/a.md` 会拼出
+  // `C:/C:/u/p/docs/a.md`（Windows 上实测会走到这个分支）。
+  const body = drive === undefined ? `${cwd}/${raw}` : `${cwd.slice(drive.length)}/${raw}`
   const out = []
-  for (const part of parts) {
+  for (const part of body.split(/[\\/]+/u)) {
     if (part === '' || part === '.') continue
     if (part === '..') out.pop()
     else out.push(part)
   }
-  const drive = /^[A-Za-z]:/u.exec(cwd)?.[0]
   return drive === undefined ? `/${out.join('/')}` : `${drive}/${out.join('/')}`
 }
 
@@ -884,18 +920,6 @@ export default {
       ctx.slots.register(
         {
           name: 'sidebar.right.tab.document.actions',
-          id: 'share-link',
-          order: 40,
-          locale: 'share-link',
-        },
-        FileShareAction,
-      ),
-    )
-
-    ctx.slots.inject('deliverables.file.actions', () =>
-      ctx.slots.register(
-        {
-          name: 'deliverables.file.actions',
           id: 'share-link',
           order: 40,
           locale: 'share-link',

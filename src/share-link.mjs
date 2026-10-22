@@ -10,13 +10,20 @@
  */
 
 import { spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import {
+  accessSync,
+  constants as FS_CONSTANTS,
   cpSync,
+  createReadStream,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -37,6 +44,7 @@ import {
 } from './cloudflared.mjs'
 
 import {
+  PAGE_CSP,
   redact,
   renderDirectoryIndex,
   renderMarkdownDocument,
@@ -48,6 +56,9 @@ export const LIMITS = {
   maxBytes: 100 * 1024 * 1024,
   maxFiles: 2000,
 }
+
+/** 有效期边界。schema、HTTP 路由与 agent 工具共用同一组值，谁都不能绕过上限。 */
+export const TTL_HOURS = Object.freeze({ min: 1, max: 720, default: 168 })
 
 /** 分享 `.md` 时对图片的约束：本地相对图片原样附带，公网图片发布时内联。 */
 export const MARKDOWN_IMAGES = Object.freeze({
@@ -173,7 +184,9 @@ export function projectSurface(events, options = {}) {
     const data = event?.data ?? {}
     if (event.type === 'user/message') {
       const text = messageText(data.content ?? data)
-      if (text.trim() !== '' && !isInjectedContext(text)) messages.push({ role: 'user', text });
+      if (text.trim() !== '' && !isInjectedContext(text)) {
+        messages.push({ role: 'user', text, time: eventTime(event) })
+      }
       continue
     }
     if (event.type === 'assistant/message') {
@@ -181,7 +194,12 @@ export function projectSurface(events, options = {}) {
       const text = messageText(message.content ?? message)
       const tools = options.includeToolCalls === true ? toolNames(message.content) : []
       if (text.trim() !== '' || tools.length > 0) {
-        messages.push({ role: 'assistant', text: text.trim() === '' ? '（本步只有工具调用）' : text, tools });
+        messages.push({
+          role: 'assistant',
+          text: text.trim() === '' ? '（本步只有工具调用）' : text,
+          tools,
+          time: eventTime(event),
+        });
       }
       continue
     }
@@ -194,6 +212,14 @@ export function projectSurface(events, options = {}) {
     }
   }
   return messages
+}
+
+/** 事件时间（epoch ms）；缺失时不渲染时间，而不是编一个。
+ * @param {{time?: unknown}} event
+ * @returns {number|undefined}
+ */
+function eventTime(event) {
+  return typeof event?.time === 'number' && Number.isFinite(event.time) ? event.time : undefined
 }
 
 /** @param {any} content */
@@ -288,11 +314,21 @@ function collectMarkdownAssets(mdPath, markdown) {
     }
     const full = resolve(root, local)
     if (!full.startsWith(root + sep)) continue
-    if (!existsSync(full) || !statSync(full).isFile()) continue
-    const size = statSync(full).size
+    // 符号链接一律跳过：`startsWith` 只看得懂路径字符串，挡不住
+    // `docs/leak -> ~/.ssh` 这种「路径在树内、文件在树外」的写法。
+    let info
+    try {
+      info = lstatSync(full)
+    } catch {
+      continue
+    }
+    if (!info.isFile() || info.isSymbolicLink()) continue
+    const real = realpathSync(full)
+    if (!real.startsWith(root + sep)) continue
+    const size = info.size
     if (size > LIMITS.maxBytes || bytes + size > LIMITS.maxBytes) continue
     bytes += size
-    assets[relative(root, full).split(sep).join('/')] = readFileSync(full)
+    assets[relative(root, full).split(sep).join('/')] = readFileSync(real)
   }
   return assets
 }
@@ -328,13 +364,67 @@ async function fetchRemoteImages(markdown) {
  * @param {string} url
  * @returns {Promise<string|undefined>}
  */
+/** 内网 / 回环 / 链路本地地址：抓取一律拒绝（SSRF）。 */
+function isPrivateAddress(address) {
+  const ip = address.toLowerCase()
+  if (ip === '::1' || ip === '::' || ip.startsWith('fe80:') || ip.startsWith('fc') || ip.startsWith('fd')) return true
+  if (ip.startsWith('::ffff:')) return isPrivateAddress(ip.slice(7))
+  const parts = ip.split('.').map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return false
+  const [a, b] = parts
+  return (
+    a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127)
+  )
+}
+
+/**
+ * 只允许抓公网图片：协议、主机名、**解析结果**三道都要过。
+ *
+ * 不做这一步，分享一个别人给的 README 就等于让 dsh 替他去访问内网
+ * （实测 `http://127.0.0.1:7788/x.png` 会被抓下来内联进公开页）。
+ * @param {string} url
+ */
+async function assertPublicImageUrl(url) {
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('只抓 http(s) 图片')
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '')
+  if (/^(localhost|.*\.local|.*\.internal|.*\.localhost)$/i.test(hostname)) throw new Error('不抓内网地址')
+  if (isPrivateAddress(hostname)) throw new Error('不抓内网地址')
+  if (/[a-z]/i.test(hostname)) {
+    const addresses = await lookup(hostname, { all: true }).catch(() => [])
+    if (addresses.length === 0) throw new Error('解析失败')
+    if (addresses.some((entry) => isPrivateAddress(entry.address))) throw new Error('不抓内网地址')
+  }
+}
+
+/**
+ * 取一张公网图片，校验类型与体积后转成 data URI。
+ *
+ * 体积是**边读边数**的：先 `arrayBuffer()` 再判断等于让一张 500 MB 的图把内存吃满
+ * 才说「太大了」。
+ * @param {string} url
+ * @returns {Promise<string|undefined>}
+ */
 async function fetchImage(url) {
+  await assertPublicImageUrl(url)
   const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(MARKDOWN_IMAGES.timeoutMs) })
   if (!response.ok) return undefined
   const type = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
   if (!type.startsWith('image/')) return undefined
-  const buffer = Buffer.from(await response.arrayBuffer())
-  if (buffer.byteLength > MARKDOWN_IMAGES.maxBytesEach) return undefined
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > MARKDOWN_IMAGES.maxBytesEach) return undefined
+  const chunks = []
+  let total = 0
+  for await (const chunk of response.body) {
+    total += chunk.length
+    if (total > MARKDOWN_IMAGES.maxBytesEach) return undefined
+    chunks.push(chunk)
+  }
+  const buffer = Buffer.concat(chunks)
   return `data:${type};base64,${buffer.toString('base64')}`
 }
 
@@ -344,8 +434,21 @@ async function fetchImage(url) {
  * @returns {string}
  */
 export function urlOf(entry) {
-  const suffix = entry.entry === undefined || entry.entry === 'index.html' ? '' : entry.entry
+  const suffix =
+    entry.entry === undefined || entry.entry === 'index.html' ? '' : encodeSharePath(entry.entry)
   return entry.provider === 'surge' ? `${entry.origin}/${suffix}` : `${entry.origin}/s/${entry.id}/${suffix}`
+}
+
+/**
+ * 把分享内的相对路径编码成 URL（保留 `/` 分段）。
+ *
+ * 不编码就会坏在文件名上：`a#b.txt` 的链接里 `#` 之后全被当成 fragment（实测点开
+ * 404），`?`、空格、中文同理。服务端 `#shareFile` 会解码回来。
+ * @param {string} value
+ * @returns {string}
+ */
+function encodeSharePath(value) {
+  return String(value).split('/').map((segment) => encodeURIComponent(segment)).join('/')
 }
 
 /** 递归统计目录体积与文件数。 */
@@ -499,6 +602,9 @@ export class ShareManager {
      */
     this.download = { state: 'idle', received: 0, total: 0, version: undefined }
     this.downloadTask = null
+    /** 索引写操作的串行队列（见 `#serialize`）。 */
+    this.publishQueue = Promise.resolve()
+    this.serverError = undefined
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -530,10 +636,14 @@ export class ShareManager {
       Number.isInteger(this.config.port) && this.config.port > 0 ? this.config.port : namedCapable ? 3089 : 0
     return new Promise((resolvePromise, reject) => {
       const server = createServer((request, response) => this.#serve(request, response))
-      server.on('error', reject)
+      server.on('error', (error) => {
+        this.serverError = String(error?.message ?? error)
+        reject(error)
+      })
       server.listen(requested, '127.0.0.1', () => {
         this.server = server
         this.port = server.address().port
+        this.serverError = undefined
         resolvePromise()
       })
     })
@@ -546,15 +656,40 @@ export class ShareManager {
   // ------------------------------------------------------------------- store
 
   #readIndex() {
+    let text
     try {
-      return JSON.parse(readFileSync(this.indexFile, 'utf8'))
+      text = readFileSync(this.indexFile, 'utf8')
     } catch {
+      return {}
+    }
+    try {
+      const parsed = JSON.parse(text)
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch (error) {
+      // 损坏就**挪走备份并大声报**：静默返回 {} 会让「所有链接 404」看起来像
+      // 用户自己撤销了，而下一次发布会把这个空索引写回去、把旧的都变成孤儿。
+      const backup = `${this.indexFile}.corrupt-${Date.now()}`
+      try {
+        renameSync(this.indexFile, backup)
+      } catch {
+        /* 备份失败也不能让读路径抛错 */
+      }
+      this.ctx.logger?.warn?.(`[share-link] index.json 解析失败，已备份为 ${backup}：${String(error)}`)
       return {}
     }
   }
 
+  /**
+   * 索引写入：先写同目录临时文件再 `rename`。
+   *
+   * 直接覆盖写会在崩溃/断电时留下半截 JSON——下一次 `#readIndex()` 解析失败、
+   * 返回 `{}`，于是**所有**链接 404，而紧接着的一次发布又会把这个空索引写回去，
+   * 旧目录从此成为永久孤儿（实测踩过）。`rename` 在同一文件系统上是原子的。
+   */
   #writeIndex(index) {
-    writeFileSync(this.indexFile, JSON.stringify(index, null, 2))
+    const tmp = `${this.indexFile}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(index, null, 2))
+    renameSync(tmp, this.indexFile)
   }
 
   /** 清掉过期条目与它们的目录。 */
@@ -589,15 +724,25 @@ export class ShareManager {
     const currentLan = lanAddress(this.port)
     let dropped = 0
     for (const [id, entry] of Object.entries(index)) {
-      if (entry.channel !== 'quick') continue
-      if (entry.provider === 'lan' && entry.origin === currentLan) continue
-      rmSync(join(this.sharesDir, id), { recursive: true, force: true })
-      delete index[id]
-      dropped += 1
+      // 快速隧道：主机名每次启动都变，上一轮的一律作废。
+      if (entry.channel === 'quick') {
+        if (entry.provider === 'lan' && entry.origin === currentLan) continue
+        rmSync(join(this.sharesDir, id), { recursive: true, force: true })
+        delete index[id]
+        dropped += 1
+        continue
+      }
+      // 局域网条目（含「隧道降级成局域网」）：地址里带着**随机端口**，重启后端口
+      // 变了这条链接就永久打不开，留着只会在列表里冒充可用链接（实测 58831→58856）。
+      if (entry.provider === 'lan' && entry.origin !== currentLan) {
+        rmSync(join(this.sharesDir, id), { recursive: true, force: true })
+        delete index[id]
+        dropped += 1
+      }
     }
     if (dropped > 0) {
       this.#writeIndex(index)
-      this.ctx.logger?.debug?.(`[share-link] 清理了 ${dropped} 条上一轮进程留下的快速隧道分享`)
+      this.ctx.logger?.debug?.(`[share-link] 清理了 ${dropped} 条上一轮进程留下的临时分享`)
     }
     return dropped
   }
@@ -682,13 +827,16 @@ export class ShareManager {
 
     const current = this.resolveChannel()
     const active = channels[current.id] ?? { ready: false, detail: '' }
+    // 监听失败时 UI 不能继续说「可以分享」：否则用户点发布才炸，还看不懂为什么。
+    const down = this.server === null
     return {
       default: current.id,
       channels,
       provider: current.provider,
-      ready: active.ready,
+      server: down ? 'down' : 'up',
+      ready: down ? false : active.ready,
       via: active.via,
-      detail: active.detail,
+      detail: down ? `分享服务未启动：${this.serverError ?? '未知原因'}` : active.detail,
       guide: active.guide,
       // 「自己装一个」的命令随平台变（macOS / Windows / Linux 各不相同），由宿主决定，
       // 客户端只负责渲染——不要在设置卡里写死 `brew`。
@@ -732,6 +880,17 @@ export class ShareManager {
       }
     })
       .then(async (path) => {
+        // 下载源是我们自己找的（GitHub + 第三方代理），没有签名就没有真实性保证。
+        // 想收紧的话在设置里填 `cloudflaredSha256`：不匹配就地删掉，绝不留着一个
+        // 「看着像 cloudflared」的可执行文件。
+        const expected = String(this.config.cloudflaredSha256 ?? '').trim().toLowerCase()
+        if (/^[0-9a-f]{64}$/.test(expected)) {
+          const actual = createHash('sha256').update(readFileSync(path)).digest('hex')
+          if (actual !== expected) {
+            rmSync(path, { force: true })
+            throw new Error(`cloudflared 校验失败：期望 ${expected.slice(0, 12)}…，实际 ${actual.slice(0, 12)}…`)
+          }
+        }
         const version = await probeVersion(path)
         this.download = { state: 'ready', received: 1, total: 1, path, version }
         return path
@@ -771,7 +930,16 @@ export class ShareManager {
   /** 已经可用的 cloudflared：显式配置 > 缓存 > PATH。 */
   #cachedCloudflared() {
     const explicit = this.config.cloudflaredPath
-    if (typeof explicit === 'string' && explicit !== '') return explicit
+    if (typeof explicit === 'string' && explicit !== '') {
+      // 配置里写错一个字母，`spawn` 会发 ENOENT；没人监听 'error' 就是整个进程退出。
+      // 所以这里先认文件，认不出来就退回自动查找/下载，而不是硬塞给 spawn。
+      try {
+        if (statSync(explicit).isFile()) return explicit
+        this.ctx.logger?.warn?.(`[share-link] cloudflaredPath 不是文件：${explicit}（回退到自动查找）`)
+      } catch {
+        this.ctx.logger?.warn?.(`[share-link] cloudflaredPath 不存在：${explicit}（回退到自动查找）`)
+      }
+    }
     const cached = join(this.root, 'bin', BINARY_NAME)
     if (existsSync(cached)) return cached
     return findOnPath('cloudflared')
@@ -823,6 +991,11 @@ export class ShareManager {
   }
 
   async revoke(id) {
+    return this.#serialize(() => this.#revokeNow(id))
+  }
+
+  /** @param {string} id */
+  async #revokeNow(id) {
     const index = this.#readIndex()
     if (index[id] === undefined) return false
     const entry = index[id]
@@ -869,6 +1042,7 @@ export class ShareManager {
       channel: options.channel,
       ttlHours: options.ttlHours,
       files: messages.length,
+      generated: true,
     })
   }
 
@@ -880,6 +1054,17 @@ export class ShareManager {
   async createPathShare(path, options = {}) {
     const target = resolve(options.cwd ?? process.cwd(), path)
     if (!existsSync(target)) throw new Error(`路径不存在：${target}`)
+    // 分享目录自己（或任何包含它的祖先）不能当分享源：`cpSync` 会把它拷进
+    // `shares/<id>/` 里，形成「自己拷自己」的递归，或者在磁盘上炸出一棵树。
+    const storeReal = realpathSync(this.root)
+    const targetReal = realpathSync(target)
+    if (
+      storeReal === targetReal ||
+      targetReal.startsWith(storeReal + sep) ||
+      storeReal.startsWith(targetReal + sep)
+    ) {
+      throw new Error('不能分享 dsh 自己的分享目录（或包含它的目录）')
+    }
     const info = statSync(target)
     const size = measure(target)
     if (size.bytes > LIMITS.maxBytes) throw new Error(`超过 ${LIMITS.maxBytes} 字节上限：${size.bytes}`)
@@ -887,6 +1072,9 @@ export class ShareManager {
 
     const body = {}
     let entry = 'index.html'
+    // generated = 这一页是**我们自己渲染**的：只有这种页面才允许套 CSP
+    // （用户自己的 .html 产物需要它自己的脚本能跑）。
+    let generated = false
     if (info.isDirectory()) {
       body[''] = target
       if (!existsSync(join(target, 'index.html'))) {
@@ -898,10 +1086,12 @@ export class ShareManager {
           theme: this.config.pageTheme,
           customCss: this.config.pageThemeCss,
         })
+        generated = true
       }
     } else if (/\.html?$/i.test(target)) {
       body['index.html'] = readFileSync(target, 'utf8')
     } else if (/\.md$/i.test(target)) {
+      generated = true
       const name = target.split(sep).at(-1) ?? 'document'
       const markdown = readFileSync(target, 'utf8')
       // 相对图片（`![](docs/a.png)`）按 md 所在目录解析后一起发布：只拷同目录树内的
@@ -930,6 +1120,7 @@ export class ShareManager {
       entry,
       source: target,
       files: size.files,
+      generated,
     })
   }
 
@@ -987,15 +1178,59 @@ export class ShareManager {
   }
 
   /**
-   * @param {{kind: string, title: string, body: Record<string, string|Buffer>, ttlHours?: number, entry?: string, source?: string, files?: number}} input
+   * 串行化「读索引 → 改 → 写索引」。
+   *
+   * 两个发布同时跑会各自读到同一份索引、再各自写回，后写的把先写的那条**静默
+   * 吃掉**（目录还在，索引里没了 = 永久孤儿）。包装一层比给索引加锁简单。
+   * @template T
+   * @param {() => Promise<T>} task
+   * @returns {Promise<T>}
    */
-  async #publish(input) {
+  #serialize(task) {
+    const next = this.publishQueue.then(task, task)
+    this.publishQueue = next.then(
+      () => undefined,
+      () => undefined,
+    )
+    return next
+  }
+
+  /**
+   * @param {{kind: string, title: string, body: Record<string, string|Buffer>, ttlHours?: number, entry?: string, source?: string, files?: number, generated?: boolean}} input
+   */
+  #publish(input) {
+    return this.#serialize(() => this.#publishNow(input))
+  }
+
+  /** @param {Parameters<ShareManager['#publish']>[0]} input */
+  async #publishNow(input) {
     const { id, dir } = this.#allocateShareDir()
     let committed = false
     try {
       for (const [name, content] of Object.entries(input.body)) {
         if (name === '') {
-          cpSync(/** @type {string} */ (content), dir, { recursive: true })
+          const source = /** @type {string} */ (content)
+          let skipped = 0
+          cpSync(source, dir, {
+            recursive: true,
+            // 符号链接不拷：路径在树内、目标在树外（`docs/leak -> ~/.ssh/id_rsa`），
+            // 拷过去等于把树外文件也发布出去（实测能读到 /etc/hosts）。
+            filter: (from) => {
+              if (from === source) return true
+              try {
+                if (lstatSync(from).isSymbolicLink()) {
+                  skipped += 1
+                  return false
+                }
+                return true
+              } catch {
+                return false
+              }
+            },
+          })
+          if (skipped > 0) {
+            this.ctx.logger?.warn?.(`[share-link] 跳过了 ${skipped} 个符号链接（避免分享到目录树之外）`)
+          }
           continue
         }
         const file = join(dir, name)
@@ -1003,7 +1238,14 @@ export class ShareManager {
         writeFileSync(file, /** @type {string|Buffer} */ (content))
       }
 
-      const ttlHours = Number.isFinite(input.ttlHours) && input.ttlHours > 0 ? input.ttlHours : this.config.ttlHours ?? 168
+      const requestedTtl =
+        Number.isFinite(input.ttlHours) && input.ttlHours > 0
+          ? input.ttlHours
+          : Number.isFinite(this.config.ttlHours) && this.config.ttlHours > 0
+            ? this.config.ttlHours
+            : TTL_HOURS.default
+      // schema 的 min/max 只挡设置页；HTTP 路由与 agent 工具是另一条路，必须同一套边界。
+      const ttlHours = Math.min(TTL_HOURS.max, Math.max(TTL_HOURS.min, requestedTtl))
 
       const channel = this.resolveChannel(input.channel)
       let origin
@@ -1048,6 +1290,7 @@ export class ShareManager {
         entry: input.entry ?? 'index.html',
         source: input.source,
         files: input.files ?? 1,
+        generated: input.generated === true ? true : undefined,
       }
       const index = this.#readIndex()
       index[id] = entry
@@ -1164,6 +1407,12 @@ export class ShareManager {
     this.tunnel = child
     const origin = await new Promise((resolvePromise, reject) => {
       const timer = setTimeout(() => reject(new Error('cloudflared 30s 内没有给出公网地址')), 30_000)
+      // 没有 'error' 监听，`spawn` 失败（ENOENT/EACCES）会变成 uncaughtException，
+      // 直接带走整个 dsh 进程——实测过。
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
       const onData = (chunk) => {
         const match = String(chunk).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
         if (match === null) return
@@ -1209,13 +1458,39 @@ export class ShareManager {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     this.tunnel = child
-    await new Promise((done) => setTimeout(done, 2500))
-    if (child.exitCode !== null) {
+    // 等 cloudflared 真的注册到 edge（输出里出现 Registered tunnel connection），
+    // 不是睡一个固定的 2.5 s：等短了会把一个还没连上的隧道当成就绪。
+    await new Promise((resolvePromise, reject) => {
+      const timer = setTimeout(() => reject(new Error('cloudflared 30s 内没有连上 Cloudflare')), 30_000)
+      const settle = (error) => {
+        clearTimeout(timer)
+        child.stdout.destroy()
+        child.stderr.destroy()
+        if (error === undefined) resolvePromise()
+        else reject(error)
+      }
+      const watch = (chunk) => {
+        if (/Registered tunnel connection|Connection .*registered/i.test(String(chunk))) settle()
+      }
+      child.on('error', (error) => settle(error))
+      child.on('exit', (code) => settle(new Error(`cloudflared 退出（code ${code}）：token 无效，或该隧道没有指向本机端口`)))
+      child.stdout.on('data', watch)
+      child.stderr.on('data', watch)
+    }).catch((error) => {
+      child.kill('SIGTERM')
       this.tunnel = null
-      throw new Error('cloudflared 命名隧道启动失败：token 无效，或该隧道没有指向本机端口')
-    }
+      throw error
+    })
     this.tunnelOrigin = `https://${hostname}`
     this.tunnelMode = 'named'
+    // 命名隧道的地址是固定的，进程掉了必须把状态清掉，否则会继续发一个死链接。
+    child.on('exit', () => {
+      if (this.tunnel !== child) return
+      this.tunnel = null
+      this.tunnelOrigin = null
+      this.tunnelMode = null
+      this.ctx.logger?.warn?.('[share-link] 命名隧道已断开，下次分享会重连')
+    })
     return this.tunnelOrigin
   }
 
@@ -1229,42 +1504,163 @@ export class ShareManager {
 
   // ------------------------------------------------------------------ serving
 
-  #serve(request, response) {
-    const url = new URL(request.url ?? '/', `http://127.0.0.1:${this.port}`)
-    const send = (status, body, headers = {}) => {
-      response.writeHead(status, {
-        'cache-control': 'no-store',
-        'x-content-type-options': 'nosniff',
-        'x-robots-tag': 'noindex, nofollow',
-        'referrer-policy': 'no-referrer',
-        ...headers,
-      })
-      response.end(body)
-    }
+  /** 分享服务的响应头基线：不缓存、不索引、不嗅探。 */
+  static BASE_HEADERS = {
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'x-robots-tag': 'noindex, nofollow',
+    'referrer-policy': 'no-referrer',
+  }
 
-    if (request.method !== 'GET' && request.method !== 'HEAD') return send(405, 'method not allowed')
-    if (url.pathname === '/healthz') return send(200, 'ok')
+  /**
+   * 分享服务的唯一入口。
+   *
+   * **任何异常都只影响这一个请求**：`createServer` 的回调里抛错没有地方接，
+   * Node 会当成 uncaughtException 直接退出进程——实测一个 `chmod 000` 的分享
+   * 文件就能把整个 dsh 打死。所以这里兜底、并在响应里降级。
+   */
+  #serve(request, response) {
+    try {
+      this.#route(request, response)
+    } catch (error) {
+      this.ctx.logger?.warn?.(`[share-link] 处理 ${request.url} 失败：${String(error)}`)
+      if (response.headersSent) response.destroy()
+      else this.#send(response, 500, 'internal error')
+    }
+  }
+
+  /** @param {import('node:http').ServerResponse} response */
+  #send(response, status, body, headers = {}) {
+    response.writeHead(status, { ...ShareManager.BASE_HEADERS, ...headers })
+    response.end(body)
+  }
+
+  #route(request, response) {
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      return this.#send(response, 405, 'method not allowed', { allow: 'GET, HEAD' })
+    }
+    if (url.pathname === '/healthz') return this.#send(response, 200, 'ok')
 
     // 短码是小写 base36；长度上限 32 是为了**兼容改造前的 32 位 hex 链接**——
     // 老 id 是 `[a-f0-9]{32}`，落在新字符集里，已经发出去的地址继续有效。
     const match = url.pathname.match(/^\/s\/([0-9a-z]{8,32})(\/.*)?$/)
-    if (match === null) return send(404, 'not found')
+    if (match === null) return this.#send(response, 404, 'not found')
 
     const [, id, rest = '/'] = match
     const entry = this.#readIndex()[id]
-    if (entry === undefined) return send(404, 'not found')
+    if (entry === undefined) return this.#send(response, 404, 'not found')
     // 到期即 404，不以 sweep 是否跑过为准：长期运行的进程可能一直没调 list()，
     // 惰性清理会让「已过期」的链接继续可读。磁盘上的清理仍交给 sweep()。
-    if (typeof entry.expiresAt === 'number' && entry.expiresAt <= Date.now()) return send(404, 'not found')
+    if (typeof entry.expiresAt === 'number' && entry.expiresAt <= Date.now()) {
+      return this.#send(response, 404, 'not found')
+    }
 
+    const file = this.#shareFile(id, rest)
+    if (file === null) return this.#send(response, 404, 'not found')
+    let info
+    try {
+      info = statSync(file)
+    } catch {
+      return this.#send(response, 404, 'not found')
+    }
+    if (!info.isFile()) return this.#send(response, 404, 'not found')
+    return this.#sendFile(request, response, file, info, entry)
+  }
+
+  /**
+   * 把请求路径解析成分享目录里的**真实**文件，越界一律 `null`。
+   *
+   * 三层：解码（不做这一步，中文 / 空格 / `#` 文件名全部 404——实测）、
+   * 字符串前缀（挡 `../`）、`realpath` 前缀（挡符号链接逃逸）。
+   * @param {string} id
+   * @param {string} rest 形如 `/` 或 `/docs/a.png`
+   * @returns {string|null}
+   */
+  #shareFile(id, rest) {
     const base = join(this.sharesDir, id)
-    const relative = rest === '/' ? '/index.html' : rest
-    const file = resolve(base, `.${relative}`)
-    if (!file.startsWith(base + sep)) return send(403, 'forbidden')
-    if (!existsSync(file) || statSync(file).isDirectory()) return send(404, 'not found')
+    const relative = rest === '/' ? 'index.html' : rest.replace(/^\/+/, '')
+    if (relative === '') return null
+    let decoded
+    try {
+      decoded = decodeURIComponent(relative)
+    } catch {
+      return null
+    }
+    if (decoded.includes('\0')) return null
+    const file = resolve(base, decoded)
+    if (file !== base && !file.startsWith(base + sep)) return null
+    try {
+      const realBase = realpathSync(base)
+      const real = realpathSync(file)
+      if (real !== realBase && !real.startsWith(realBase + sep)) return null
+      return real
+    } catch {
+      return null
+    }
+  }
 
-    const body = readFileSync(file)
-    return send(200, body, { 'content-type': mimeOf(file) })
+  /** @param {string|undefined} header @param {number} size */
+  #parseRange(header, size) {
+    if (typeof header !== 'string' || header.trim() === '') return undefined
+    const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+    if (match === null) return undefined
+    const [, rawStart, rawEnd] = match
+    if (rawStart === '' && rawEnd === '') return 'invalid'
+    let start
+    let end
+    if (rawStart === '') {
+      const suffix = Number(rawEnd)
+      if (!Number.isFinite(suffix) || suffix <= 0) return 'invalid'
+      start = Math.max(0, size - suffix)
+      end = size - 1
+    } else {
+      start = Number(rawStart)
+      end = rawEnd === '' ? size - 1 : Number(rawEnd)
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) return 'invalid'
+    return { start, end: Math.min(end, size - 1) }
+  }
+
+  /**
+   * 流式发文件：不把整份读进内存（100 MB 分享 × 并发请求会把堆吃光），
+   * 支持 Range（PDF / 视频可拖动），HEAD 只回头。
+   */
+  #sendFile(request, response, file, info, entry) {
+    const headers = { 'content-type': mimeOf(file), 'accept-ranges': 'bytes' }
+    // 只给**我们渲染的**页面套 CSP：用户自己的 .html 产物要靠它自己的脚本跑。
+    if (entry.generated === true) headers['content-security-policy'] = PAGE_CSP
+
+    const range = this.#parseRange(request.headers.range, info.size)
+    if (range === 'invalid') {
+      return this.#send(response, 416, 'range not satisfiable', { 'content-range': `bytes */${info.size}` })
+    }
+    if (info.size === 0) {
+      // 空文件没有 `end = size - 1` 可言，直接回空体，别把 start:0/end:-1 交给流。
+      response.writeHead(200, { ...ShareManager.BASE_HEADERS, ...headers, 'content-length': '0' })
+      return response.end()
+    }
+    const start = range === undefined ? 0 : range.start
+    const end = range === undefined ? info.size - 1 : range.end
+    headers['content-length'] = String(Math.max(0, end - start + 1))
+    if (range !== undefined) headers['content-range'] = `bytes ${start}-${end}/${info.size}`
+    const status = range === undefined ? 200 : 206
+
+    const stream = createReadStream(file, range === undefined ? undefined : { start, end })
+    stream.once('error', (error) => {
+      this.ctx.logger?.warn?.(`[share-link] 读取 ${file} 失败：${String(error)}`)
+      if (response.headersSent) response.destroy()
+      else this.#send(response, 404, 'not found')
+    })
+    stream.once('open', () => {
+      response.writeHead(status, { ...ShareManager.BASE_HEADERS, ...headers })
+      if (request.method === 'HEAD') {
+        stream.destroy()
+        response.end()
+        return
+      }
+      stream.pipe(response)
+    })
   }
 }
 
@@ -1275,7 +1671,7 @@ export class ShareManager {
  * @param {NodeJS.ProcessEnv} env
  * @returns {Promise<string>} 合并后的 stdout + stderr。
  */
-export function runTool(name, args, env) {
+export function runTool(name, args, env, timeoutMs = 180_000) {
   const binary = findOnPath(name)
   return new Promise((resolvePromise, reject) => {
     const argv = binary === undefined ? ['--yes', name, ...args] : args
@@ -1286,16 +1682,26 @@ export function runTool(name, args, env) {
       shell: binary === undefined && IS_WINDOWS,
     })
     let output = ''
+    // 外部工具会卡住（surge 在没 TTY 时可能等输入、网络也会挂）：不设超时的话
+    // 发布请求和整个弹窗会永久 busy，用户只能关页面。
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`${name} 超时（${Math.round(timeoutMs / 1000)}s）：${output.slice(-200)}`))
+    }, timeoutMs)
+    const settle = (fn) => (value) => {
+      clearTimeout(timer)
+      fn(value)
+    }
     child.stdout.on('data', (chunk) => {
       output += String(chunk)
     })
     child.stderr.on('data', (chunk) => {
       output += String(chunk)
     })
-    child.on('error', reject)
+    child.on('error', settle(reject))
     child.on('exit', (code) => {
-      if (code === 0) resolvePromise(output)
-      else reject(new Error(`${name} 退出 ${code}：${output.slice(-400)}`))
+      if (code === 0) settle(resolvePromise)(output)
+      else settle(reject)(new Error(`${name} 退出 ${code}：${output.slice(-400)}`))
     })
   })
 }

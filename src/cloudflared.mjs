@@ -1,14 +1,23 @@
 /**
  * cloudflared 的获取：查找、下载、版本探测。
  *
- * 下载放在独立进程里跑（见 `download-worker.mjs`），这里是可以被两边共用的
- * 无状态实现——插件进程只做「找得到就返回路径」，下载本身不占 dsh 的线程与生命周期。
+ * 全是无状态函数：`ShareManager` 在自己的进程里调用它们（0.6.0 起下载不再有
+ * 独立的 worker 进程，那个设计已回滚）。
  *
  * @module dsh-share-link/cloudflared
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  accessSync,
+  constants as FS_CONSTANTS,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 /** Windows 上可执行文件带扩展名、PATH 分隔符也不同。 */
@@ -40,9 +49,12 @@ export function findOnPath(name) {
     for (const candidate of candidates) {
       const full = join(dir, candidate)
       try {
-        if (statSync(full).isFile()) return full
+        if (!statSync(full).isFile()) continue
+        // 不可执行的文件返回给 spawn 只会换来 EACCES/ENOEXEC，不如当没找到。
+        if (!IS_WINDOWS) accessSync(full, FS_CONSTANTS.X_OK)
+        return full
       } catch {
-        /* 不存在就继续 */
+        /* 不存在 / 不可执行就继续 */
       }
     }
   }
@@ -96,6 +108,10 @@ export async function downloadCloudflared(binDir, onProgress = () => {}) {
     const tar = spawn('tar', ['-xzf', archive, '-C', binDir], { stdio: 'ignore' })
     tar.on('exit', (code) => (code === 0 ? done() : fail(new Error(`tar 退出 ${code}`))))
     tar.on('error', fail)
+  }).catch((error) => {
+    // 解压失败也要把 20 MB 的 .tmp 清掉，否则下次启动会当缓存留着。
+    rmSync(archive, { force: true })
+    throw error
   })
   rmSync(archive, { force: true })
   const binary = join(binDir, 'cloudflared')

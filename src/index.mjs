@@ -13,7 +13,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-import { CODE_LENGTH, ShareError, ShareManager } from './share-link.mjs'
+import { CODE_LENGTH, ShareError, ShareManager, TTL_HOURS } from './share-link.mjs'
 
 export const name = 'dsh-share-link'
 
@@ -24,11 +24,10 @@ export const inject = ['tools', 'sessionQuery', 'connection']
 /** 配置默认值（设置卡与运行时共用同一份，避免两处漂移）。 */
 export const DEFAULTS = Object.freeze({
   defaultChannel: 'quick',
-  provider: 'tunnel',
-  tunnelMode: 'quick',
   port: 0,
-  ttlHours: 168,
+  ttlHours: TTL_HOURS.default,
   cloudflaredPath: '',
+  cloudflaredSha256: '',
   tunnelToken: '',
   tunnelHostname: '',
   surgeLogin: '',
@@ -49,14 +48,6 @@ export const Config = Schema.object({
     .default(DEFAULTS.defaultChannel)
     .volatile()
     .description('分享弹窗里默认选中的通道'),
-  provider: Schema.union(['tunnel', 'lan', 'surge'])
-    .default(DEFAULTS.provider)
-    .volatile()
-    .description('tunnel = 公网 cloudflared（可撤销）；lan = 仅同局域网；surge = Surge 持久域名（可 teardown）'),
-  tunnelMode: Schema.union(['quick', 'named'])
-    .default(DEFAULTS.tunnelMode)
-    .volatile()
-    .description('quick = cloudflared 临时域名；named = 你在 Cloudflare 自建的固定域名隧道（需要自有域名）'),
   port: Schema.natural().default(DEFAULTS.port).volatile().description('只读分享服务端口，0 = 随机（命名隧道模式下自动用 3089）'),
   idLength: Schema.natural()
     .min(CODE_LENGTH.min)
@@ -64,8 +55,17 @@ export const Config = Schema.object({
     .default(DEFAULTS.idLength)
     .volatile()
     .description('分享链接里的短码长度：8 位 ≈ 41 bit 熵（默认，够发也够难猜），10 位 ≈ 52 bit，16 位 ≈ 83 bit'),
-  ttlHours: Schema.natural().min(1).max(720).default(DEFAULTS.ttlHours).volatile().description('分享链接默认有效期（小时）'),
+  ttlHours: Schema.natural()
+    .min(TTL_HOURS.min)
+    .max(TTL_HOURS.max)
+    .default(DEFAULTS.ttlHours)
+    .volatile()
+    .description('分享链接默认有效期（小时）'),
   cloudflaredPath: Schema.string().default(DEFAULTS.cloudflaredPath).volatile().description('已有 cloudflared 可执行文件路径；留空则自动查找/下载'),
+  cloudflaredSha256: Schema.string()
+    .default(DEFAULTS.cloudflaredSha256)
+    .volatile()
+    .description('可选：cloudflared 二进制的 SHA-256（64 位 hex）。填了就在下载后校验，不匹配直接删掉'),
   tunnelToken: Schema.string().default(DEFAULTS.tunnelToken).volatile().description('Cloudflare 命名隧道的 token；填了就产出固定域名链接'),
   tunnelHostname: Schema.string().default(DEFAULTS.tunnelHostname).volatile().description('命名隧道绑定的域名，例如 share.example.com'),
   surgeLogin: Schema.string().default(DEFAULTS.surgeLogin).volatile().description('Surge 账号邮箱；配合 surgeToken 免交互登录'),
@@ -215,7 +215,7 @@ export function apply(ctx, config = {}) {
     toolShareArtifact: defineTool({
           name: 'share_artifact',
           description:
-            'Publish a local file or directory (HTML page, Markdown, slides, build output) as a read-only public link. Directories must contain index.html; a single .html file is served at the link root.',
+            'Publish a local file or directory (HTML page, Markdown, slides, build output) as a read-only public link. A directory without index.html gets a generated file listing; a single .html file is served at the link root.',
           parameters: {
             path: { type: 'string', required: true, description: '文件或目录路径，绝对路径或相对会话工作目录' },
             channel: { type: 'string', description: '通道：quick | surge | named | lan；默认取设置里的默认通道' },
@@ -296,7 +296,7 @@ export function apply(ctx, config = {}) {
       fetch: async (request) => {
         const origin = request.headers.get('origin')
         const host = request.headers.get('host')
-        if (origin !== null && host !== null && new URL(origin).host !== host) {
+        if (origin !== null && !isSameOrigin(origin, host)) {
           return json({ error: 'cross-origin request rejected' }, 403)
         }
         try {
@@ -358,6 +358,25 @@ export function apply(ctx, config = {}) {
     const body = await readJson(request)
     return json({ revoked: await manager.revoke(body.id) })
   })
+}
+
+/**
+ * 同源判定。
+ *
+ * `Origin` 可能是字面量 `null`（sandboxed iframe、本地文件）——`new URL('null')`
+ * 会抛，必须在比较之前挡住，别让它在路由里变成 500。
+ * @param {string} origin
+ * @param {string|null} host
+ */
+function isSameOrigin(origin, host) {
+  if (host === null) return true
+  let parsed
+  try {
+    parsed = new URL(origin)
+  } catch {
+    return false
+  }
+  return parsed.host === host
 }
 
 /** @param {any} request */

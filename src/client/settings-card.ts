@@ -18,18 +18,11 @@ export const PACKAGE = '@vlln/dsh-share-link'
 const NS = 'settings.dsh-share-link'
 
 const CHANNELS = [
-  { id: 'quick', provider: 'tunnel', labelKey: 'channel.quick', hintKey: 'channel.quick.hint' },
-  { id: 'named', provider: 'tunnel', labelKey: 'channel.named', hintKey: 'channel.named.hint' },
-  { id: 'surge', provider: 'surge', labelKey: 'channel.surge', hintKey: 'channel.surge.hint' },
-  { id: 'lan', provider: 'lan', labelKey: 'channel.lan', hintKey: 'channel.lan.hint' },
+  { id: 'quick', labelKey: 'channel.quick' },
+  { id: 'named', labelKey: 'channel.named' },
+  { id: 'surge', labelKey: 'channel.surge' },
+  { id: 'lan', labelKey: 'channel.lan' },
 ]
-
-/** 从配置推导当前渠道（命名隧道 = tunnel + 有 token）。 */
-function channelOf(cfg) {
-  if (cfg.provider === 'surge') return 'surge'
-  if (cfg.provider === 'lan') return 'lan'
-  return cfg.tunnelMode === 'named' ? 'named' : 'quick'
-}
 
 /** 四个 agent 工具：默认关闭，在设置卡里逐个开。 */
 const TOOL_FLAGS = [
@@ -73,13 +66,14 @@ const FIELD_SPEC = {
   port: { kind: 'number', secret: false },
   idLength: { kind: 'number', secret: false },
   ttlHours: { kind: 'number', secret: false },
+  cloudflaredPath: { kind: 'text', secret: false },
+  cloudflaredSha256: { kind: 'text', secret: false },
   tunnelToken: { kind: 'text', secret: true },
   tunnelHostname: { kind: 'text', secret: false },
   surgeLogin: { kind: 'text', secret: false },
   surgeToken: { kind: 'text', secret: true },
   surgeDomain: { kind: 'text', secret: false },
   surgePrefix: { kind: 'text', secret: false },
-  surgeLogin: { kind: 'text', secret: false },
 }
 
 const el = h
@@ -290,6 +284,9 @@ function SharesPanel(props) {
   const [pending, setPending] = React.useState('')
 
   const load = React.useCallback(() => {
+    // 先清错误：否则一次失败的 list 会把「重试」按钮和列表一起挡在早返回后面，
+    // 面板永久停在错误态。
+    setError('')
     fetch('/api/share-link/list')
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
       .then((payload) => setRows(payload.items ?? []))
@@ -318,7 +315,19 @@ function SharesPanel(props) {
     }
   }
 
-  if (error !== '') return el('p', { style: { margin: '8px 0 0', fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, error)
+  if (error !== '') {
+    return el(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: 10, margin: '8px 0 0' } },
+      el('span', { style: { flex: 1, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, error),
+      el('button', {
+        type: 'button',
+        'data-share-shares-retry': 'true',
+        onClick: load,
+        style: { height: 24, padding: '0 9px', borderRadius: 7, fontSize: 12, cursor: 'pointer', border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'inherit' },
+      }, t('shares.retry')),
+    )
+  }
   if (rows === null) return el('p', { style: { margin: '8px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('shares.loading'))
   if (rows.length === 0) return el('p', { style: { margin: '8px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('shares.empty'))
 
@@ -404,7 +413,7 @@ function ThemePreview(props) {
     'div',
     { 'data-share-preview': theme, style: { marginTop: 10 } },
     failed
-      ? el('p', { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, '预览生成失败')
+      ? el('p', { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-state-error-primary)' } }, t('preview.failed'))
       : el('iframe', {
           title: 'share page preview',
           srcDoc: html,
@@ -435,7 +444,9 @@ function CssArea(props) {
     spellCheck: false,
     placeholder: ':root { --accent: #e11d48; }\nbody { letter-spacing: .01em; }',
     onChange: (event) => setText(event.target.value),
-    onBlur: () => onCommit(text),
+    onBlur: () => {
+      if (text !== last) onCommit(text)
+    },
     onKeyDown: (event) => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) onCommit(text)
     },
@@ -460,6 +471,17 @@ export function SettingsCard(props) {
   const [openSection, setOpenSection] = React.useState(null)
   const channel = state.value?.defaultChannel ?? 'quick'
 
+  // 就绪状态依赖凭据与端口：填完 token / 改完默认通道之后必须重新问一次，
+  // 否则顶部横幅会一直停在「缺隧道 token」（实测）。
+  const readinessKey = [
+    channel,
+    state.value?.tunnelToken,
+    state.value?.tunnelHostname,
+    state.value?.surgeToken,
+    state.value?.surgeLogin,
+    state.value?.cloudflaredPath,
+    state.value?.port,
+  ].join('\u0000')
   React.useEffect(() => {
     let alive = true
     fetch('/api/share-link/status')
@@ -471,7 +493,7 @@ export function SettingsCard(props) {
     return () => {
       alive = false
     }
-  }, [channel])
+  }, [readinessKey])
 
   if (props.view === 'summary') return t('summary')
   if (!state.available) return null
@@ -710,7 +732,16 @@ export function SettingsCard(props) {
           'div',
           { style: { marginTop: 6, padding: '4px 0 0 12px', borderLeft: '2px solid var(--dsw-alias-border-l2)' } },
           el('p', { style: { margin: '0 0 4px', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' } }, t('advanced.hint')),
-          ['port', 'idLength', 'ttlHours', 'surgeDomain', 'surgePrefix'].map((key) => field(key)),
+          [
+            'port',
+            'idLength',
+            'ttlHours',
+            'surgeDomain',
+            'surgePrefix',
+            'surgeLogin',
+            'cloudflaredPath',
+            'cloudflaredSha256',
+          ].map((key) => field(key)),
         )
       : null,
 
@@ -791,7 +822,7 @@ export const zh = {
   ready: '可以分享',
   notReady: '还不能分享',
   advanced: '高级设置',
-  'advanced.hint': '一般不用改：端口、默认有效期、Surge 域名后缀。',
+  'advanced.hint': '一般不用改：端口、默认有效期、Surge 域名后缀；也能指定自己的 cloudflared（路径 / SHA-256）。',
   'advanced.hintShort': '端口 / 有效期 / 域名',
   collapse: '收起',
   'channel.quick.desc': '零配置：dsh 在跑就有链接，重启换域名。适合临时发给别人看一眼。首次使用会自动下载 cloudflared（约 20 MB；网络慢也可以先自己装一个）。',
@@ -831,6 +862,8 @@ export const zh = {
   'cf.hint': '快速隧道需要一个 cloudflared 可执行文件（约 20 MB）：插件加载时就在后台自动下载，这里能看到进度。只用 Surge 的话不需要它。',
   'cf.skip': '想跳过下载就自己装一个：',
   'cf.recheck': '再检查一次',
+  'preview.failed': '预览生成失败（宿主没返回页面）',
+  'shares.retry': '重试',
   'field.port': '分享服务端口',
   'field.port.hint': '0 = 随机端口；命名隧道模式必须固定（默认 3089）。',
   'field.ttlHours': '默认有效期（小时）',
@@ -920,6 +953,8 @@ export const en = {
   'cf.hint': 'Quick tunnels need the cloudflared binary (~20 MB). It downloads automatically when the plugin loads; progress shows here. Surge-only setups do not need it.',
   'cf.skip': 'To skip the download, install it yourself:',
   'cf.recheck': 'Check again',
+  'preview.failed': 'Preview failed (the host returned no page)',
+  'shares.retry': 'Retry',
   'field.port': 'Share server port',
   'field.port.hint': '0 = random. Named tunnels need a fixed port (3089 by default).',
   'field.ttlHours': 'Default lifetime (hours)',

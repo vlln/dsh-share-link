@@ -7,6 +7,8 @@
  * @module dsh-share-link/session-page
  */
 
+import { createHash } from 'node:crypto'
+
 import MarkdownIt from 'markdown-it'
 
 /**
@@ -61,6 +63,41 @@ const ALLOWED_ATTRS = new Set([
 /** 需要校验协议的属性（`javascript:` 之类必须挡掉）。 */
 const URL_ATTRS = new Set(['href', 'src', 'poster'])
 
+/** HTML 命名实体 → 字符：只需覆盖能拼出协议名的那几个（`&#58;` `&colon;` 等）。 */
+const ENTITY_NAMES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", colon: ':', tab: '\t', newline: '\n', nbsp: ' ',
+}
+
+/** @param {number} code @returns {string} */
+function codePointChar(code) {
+  return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '\uFFFD'
+}
+
+/**
+ * 解 HTML 实体。
+ *
+ * 必须在**校验协议之前**做：`java&#115;cript:` 在浏览器里就是 `javascript:`，
+ * 但它不是合法 URL 的 scheme，正则看不出来。同理命名实体 `&colon;`。
+ * @param {string} value
+ */
+function decodeEntities(value) {
+  return value
+    .replace(/&#x([0-9a-f]+);?/gi, (_m, hex) => codePointChar(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_m, dec) => codePointChar(Number.parseInt(dec, 10)))
+    .replace(/&([a-z][a-z0-9]*);?/gi, (match, name) => ENTITY_NAMES[name.toLowerCase()] ?? match)
+}
+
+/**
+ * URL 属性的归一化形式：解实体 + 去掉控制字符与空白 + 小写。
+ *
+ * 三类绕过全靠这一步：实体（`&#115;`）、换行（`java\nscript:`——WHATWG URL
+ * 解析器会先剥掉 tab/换行）、以及首尾空白。
+ * @param {string} value
+ */
+function normalizeUrl(value) {
+  return decodeEntities(value).replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase()
+}
+
 /**
  * 过滤一段 HTML：只留白名单标签与属性。
  *
@@ -68,14 +105,48 @@ const URL_ATTRS = new Set(['href', 'src', 'poster'])
  * 输出（结构已知、文本已转义），而它要挡的东西很具体：脚本、内联事件、
  * `javascript:` 协议、以及 `<style>` 这类能整页变形的块。
  *
+ * 两条铁律（2026-10-22 补）：
+ * 1. **重新拼出来的属性值必须再转义一遍**。原值可能来自单引号属性
+ *    （`src='x" onerror=…'`），原样拼进双引号就会提前闭合属性、凭空造出一个
+ *    `onerror`——这是实测能执行的一种绕过。
+ * 2. **协议校验看归一化后的值**，不看原始字节。
+ *
  * @param {string} html
  * @returns {string}
  */
 export function sanitizeHtml(html) {
-  return String(html)
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<(script|style|iframe|object|embed|form|textarea|template)\b[\s\S]*?<\/\1\s*>/gi, '')
-    .replace(/<\/?[a-zA-Z][^>]*>/g, (tag) => filterTag(tag))
+  return (
+    String(html)
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<(script|style|iframe|object|embed|form|textarea|template)\b[\s\S]*?<\/\1\s*>/gi, '')
+      // 标签匹配要尊重引号：`<a href="x>y">` 与 `<a title="<b>">` 在浏览器里都是
+      // 一个标签（引号内的 `<` `>` 不结束它），而 `/<[^>]*>/` 会把它们切碎，
+      // 切碎之后就绕过了属性白名单。
+      .replace(TAG_CLOSE, (tag) => filterTag(tag))
+      .replace(TAG_OPEN, (tag) => filterTag(tag))
+  )
+}
+
+/** 结束标签：`</p>`。 */
+const TAG_CLOSE = /<\/([a-zA-Z][a-zA-Z0-9-]*)\s*>/g
+
+/** 开始标签：属性值可以带引号，引号内允许出现 `<` `>`。 */
+const TAG_OPEN =
+  /<([a-zA-Z][a-zA-Z0-9-]*)((?:\s+[a-zA-Z_:][-a-zA-Z0-9_:.]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?)*)\s*\/?>/g
+
+/**
+ * 属性值再转义。
+ *
+ * 只转 `"` `<` `>`，**不转 `&`**：属性值里的实体在分词之后才解码，不可能借此
+ * 闭合属性；而把 `&` 再转一遍会把用户本来正确的 `&amp;` 变成 `&amp;amp;`，
+ * 链接里的查询串就废了（实测 `?x=1&amp;y=2` 会变成字面量 `&amp;`）。
+ * @param {string} value @returns {string}
+ */
+function escapeAttr(value) {
+  return String(value)
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 }
 
 /** @param {string} tag @returns {string} */
@@ -99,25 +170,29 @@ function filterTag(tag) {
       attributes.push(key)
       continue
     }
-    if (URL_ATTRS.has(key) && !isSafeUrl(value)) continue
-    attributes.push(`${key}="${value}"`)
+    if (URL_ATTRS.has(key) && !isSafeUrl(normalizeUrl(value), key)) continue
+    attributes.push(`${key}="${escapeAttr(value)}"`)
   }
   const open = `<${name}${attributes.length === 0 ? '' : ` ${attributes.join(' ')}`}>`
   return open
 }
 
 /**
- * 只放行 http(s) / mailto / 站内相对路径 / `data:image/*`。
- * @param {string} value
+ * 只放行 http(s) / mailto / 站内相对路径 / `src` 上的 `data:image/*`。
+ *
+ * `data:` 只给图片类属性：`<a href="data:text/html,…">` 是钓鱼页的经典载体。
+ * @param {string} value 已归一化（解实体、去空白、小写）
+ * @param {string} key 属性名
  * @returns {boolean}
  */
-function isSafeUrl(value) {
-  const url = value.trim().toLowerCase()
+function isSafeUrl(value, key = '') {
+  const url = value.trim()
   if (url === '') return false
   const scheme = /^([a-z][a-z0-9+.-]*):/.exec(url)
   if (scheme === null) return true
   if (scheme[1] === 'http' || scheme[1] === 'https' || scheme[1] === 'mailto') return true
-  return scheme[1] === 'data' && url.startsWith('data:image/')
+  if (scheme[1] !== 'data') return false
+  return (key === 'src' || key === 'poster') && url.startsWith('data:image/')
 }
 
 /**
@@ -152,9 +227,11 @@ const SECRET_RULES = [
 
 /** 把绝对家目录压成 `~`：分享页里出现 `/Users/xxx` 等于泄露用户名。 */
 function scrubHomePaths(text) {
+  // 只压「独立出现」的家目录（行首 / 空白 / 引号 / 括号之后）：否则
+  // `https://example.com/home/docs` 这种 URL 会被压成 `https://example.com~`。
   return text
-    .replace(/(?:\/Users\/|\/home\/)([A-Za-z0-9._-]+)(?=[/\\\s"'`]|$)/g, '~')
-    .replace(/[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/g, '~');
+    .replace(/(^|[\s"'(\[])(?:\/Users\/|\/home\/)([A-Za-z0-9._-]+)(?=[/\\\s"'),\]]|$)/g, '$1~')
+    .replace(/(^|[\s"'(\[])[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/g, '$1~');
 }
 
 
@@ -178,6 +255,23 @@ document.addEventListener('click', async (event) => {
   } catch {}
 });
 </script>`;
+
+/**
+ * 页面 CSP。
+ *
+ * 分享页是给别人打开的内容页：白名单能挡掉大部分注入，但**挡住一整类**要靠
+ * CSP——`script-src` 只放行下面这一段 hash，内联事件（`onerror=`）与任何注入
+ * 的 `<script>` 都执行不了。`default-src 'none'` 顺带把 XHR/frame 也关掉。
+ *
+ * 用 `<meta>` 而不是响应头：分享页可以被另存成本地文件打开，那时没有头。
+ */
+export const PAGE_CSP =
+  `default-src 'none'; img-src http: https: data:; media-src http: https:; ` +
+  `style-src 'unsafe-inline'; script-src 'sha256-${createHash('sha256').update(COPY_SCRIPT).digest('base64')}'; ` +
+  `base-uri 'none'; form-action 'none'`
+
+/** CSP meta 标签（三套页面共用）。 */
+const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${PAGE_CSP}">`
 
 const PAGE_CSS = `  :root {
     color-scheme: light dark;
@@ -548,6 +642,7 @@ export function renderSessionPage(input) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+${CSP_META}
 <title>${escapeHtml(title)}</title>
 <style>
 ${PAGE_CSS}
@@ -604,6 +699,7 @@ export function renderMarkdownDocument(input) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+${CSP_META}
 <title>${escapeHtml(title)}</title>
 <style>
 ${PAGE_CSS}
@@ -659,6 +755,7 @@ export function renderDirectoryIndex(input) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+${CSP_META}
 <title>${escapeHtml(title)}</title>
 <style>
 ${PAGE_CSS}
