@@ -264,12 +264,12 @@ const GUIDE_COPY: Record<string, { zh: { title: string; body: string; linkText: 
   'tunnel-warming': {
     zh: {
       title: 'cloudflared 还在下载',
-      body: '快速隧道第一次使用要先下载约 20 MB 的 cloudflared（正在后台下），下好再点一次「生成链接」即可，之后就只要一两秒。不想等就切到 Surge —— 它不需要下载。',
+      body: 'cloudflared 还没下完（约 20 MB，插件加载时已在后台下载）。下好之后会自动继续，也可以等进度到 100% 再点一次；不想等就切到 Surge —— 它不需要下载。',
       linkText: '下载 cloudflared',
     },
     en: {
       title: 'cloudflared is still downloading',
-      body: 'The first quick-tunnel share downloads cloudflared (~20 MB) in the background. Click "Create link" again once it finishes — later shares take a second or two. Or switch to Surge, which needs no download.',
+      body: 'cloudflared is still downloading (~20 MB, started when the plugin loaded). The share continues automatically once it finishes — or switch to Surge, which needs no download.',
       linkText: 'Download cloudflared',
     },
   },
@@ -358,15 +358,7 @@ function ShareDialog(props) {
   const [guide, setGuide] = React.useState(null)
   const [channel, setChannel] = React.useState(null)
   const [hint, setHint] = React.useState('')
-  const warmed = React.useRef(false)
-
-  // 选中快速隧道时先预热 cloudflared：20 MB 的下载放到这一段，而不是压在那一次
-  // 「生成链接」上（实测慢网络下单是这一步就要十几分钟，用户只会以为卡死）。
-  const warmUp = () => {
-    if (warmed.current) return
-    warmed.current = true
-    void fetch('/api/share-link/warm', { method: 'POST' }).catch(() => {})
-  }
+  const autoRetried = React.useRef(false)
 
   const submit = async () => {
     setBusy(true)
@@ -425,11 +417,6 @@ function ShareDialog(props) {
     }
   }, [])
 
-  // 选到快速隧道就预热（放 effect 里，别在渲染过程中发请求）。
-  React.useEffect(() => {
-    if ((channel ?? status?.default ?? 'quick') === 'quick') warmUp()
-  }, [channel, status])
-
   // 发布期间把「在干什么 / 下到哪了」显示出来：慢的时候有进度，就不会像卡死。
   React.useEffect(() => {
     if (!busy) {
@@ -469,6 +456,33 @@ function ShareDialog(props) {
       clearInterval(timer)
     }
   }, [busy, channel, status])
+
+  // 下载没完成被挡回来时，等它下好自动续做一次（用户不用再点一次）；
+  // 关掉弹窗会清掉定时器，所以不会在后台偷偷发布。
+  React.useEffect(() => {
+    if (guide?.code !== 'tunnel-warming' || autoRetried.current) return undefined
+    if ((channel ?? status?.default ?? 'quick') !== 'quick') return undefined
+    let alive = true
+    const timer = setInterval(async () => {
+      try {
+        const response = await fetch('/api/share-link/status')
+        if (!response.ok || !alive) return
+        const value = await response.json()
+        if (!alive) return
+        if (value?.channels?.quick?.download?.state === 'ready') {
+          autoRetried.current = true
+          clearInterval(timer)
+          void submit()
+        }
+      } catch {
+        /* 下一轮再试 */
+      }
+    }, 2000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [guide, channel, status])
 
   React.useEffect(() => {
     const onKey = (event) => {

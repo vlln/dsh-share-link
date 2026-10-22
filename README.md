@@ -20,7 +20,7 @@ dsh plugin --profile web add github:vlln/dsh-share-link
 > **Plugins → Add plugin** 里填包名安装。
 
 - 卸载：`dsh plugin --profile web remove @vlln/dsh-share-link`
-- 首次分享公网链接会自动下载 `cloudflared`（约 20 MB）。下载在打开分享弹窗时就开始，弹窗和设置页都显示进度；网络慢可以先 `brew install cloudflared`，或者直接走 Surge（不需要下载）
+- 快速隧道需要一个 `cloudflared` 可执行文件（约 20 MB）：**插件加载后就在后台自动下载**，`Plugins → Share Link` 里有「快速隧道依赖」状态条与「检查」按钮（能看到版本、手动重试）。想跳过下载可以先 `brew install cloudflared`，插件会直接用 PATH 上那份；只用 Surge 的话完全不依赖它
 
 ### 装好之后怎么确认
 
@@ -71,6 +71,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
 - 顶部状态条：现在能不能分享、缺什么
 - **默认通道**：只决定弹窗预选哪个
+- **快速隧道依赖**：cloudflared 的下载状态与版本，「检查」会重新探测并重试下载
 - 渠道配置卡：每个通道自己的参数，互不排斥；没配好的自动展开并给步骤与官方入口
 - **分享页样式**：5 种预设 + 自定义 CSS，选完立刻预览
 - **已发布的链接**：哪些还活着、一键撤销
@@ -134,6 +135,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 - 会话快照只含「人类输入 + 助手可见文本」，没有工具调用详情视图。
 - `.md` 分享的图片有上限：只拷同目录树内的文件（`../` 越界忽略）、最多 24 张公网图、单张 ≤ 2 MB、合计 ≤ 8 MB；抓取失败的内联不了，会退回外链。
 - 快速隧道的主机名压不下去（Cloudflare 随机给），短码只缩短路径段；想要 `s.你的域名/xxxx` 这种短链必须用命名隧道。
+- 下载完成后，**第一次**快速隧道分享还要 5–10 秒（cloudflared 要连 Cloudflare 拿主机名），之后同一进程内再分享是零点几秒。
 - 快速隧道的链接**只活在这次进程里**：关机、重启 dsh 后主机名会变，旧地址永久失效，所以启动时会把这些条目连同快照清掉（命名隧道与 Surge 不受影响，地址固定）。
 - 刚生成的快速隧道链接**可能几十秒内打不开**（`trycloudflare.com` 的 DNS 记录偶尔是滞后才生效；太早解析还会被本地 DNS 缓存住 NXDOMAIN，等缓存过期就好）。等一会儿或换个网络再试，不用重新分享。
 

@@ -338,12 +338,9 @@ export function apply(ctx, config = {}) {
 
   route('/api/share-link/status', ['GET'], async () => json(await manager.status()))
 
-  // 预热 cloudflared：弹窗一打开就调，20 MB 的下载不再卡在「创建链接」那一下。
-  // 立即返回当前状态，不 await 下载本身（否则这个请求又要挂几分钟）。
-  route('/api/share-link/warm', ['POST'], async () => {
-    void manager.prewarm()
-    return json(manager.downloadInfo())
-  })
+  // 设置页的「检查」：cloudflared 在不在、能不能跑、什么版本；缺了就顺手开始下载。
+  // 下载在插件加载时已自动启动，这个接口只负责「看一眼 + 重试」。
+  route('/api/share-link/check', ['POST'], async () => json(await manager.check()))
 
   // 预览：用同一套渲染器出一页样例，设置卡里 iframe 直接展示
   route('/api/share-link/preview', ['POST'], async (request) => {

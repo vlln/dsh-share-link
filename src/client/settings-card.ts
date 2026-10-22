@@ -84,6 +84,93 @@ const FIELD_SPEC = {
 
 const el = h
 
+/**
+ * 快速隧道的依赖（cloudflared）：状态 + 检查。
+ *
+ * 下载在插件加载时自动开始（不等用户点分享），这里只负责让人看见进度、
+ * 以及查一次「到底装好没有、什么版本」。没装/装坏时才提示重试。
+ */
+function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean }) {
+  const { t, disabled } = props
+  const [state, setState] = React.useState<any>(null)
+  const [checking, setChecking] = React.useState(false)
+
+  const load = async () => {
+    try {
+      const response = await fetch('/api/share-link/status')
+      if (response.ok) setState((await response.json())?.channels?.quick?.download ?? null)
+    } catch {
+      /* 宿主还没就绪时忽略 */
+    }
+  }
+
+  const check = async () => {
+    setChecking(true)
+    try {
+      const response = await fetch('/api/share-link/check', { method: 'POST' })
+      if (response.ok) setState(await response.json())
+    } catch {
+      /* 忽略：下一轮轮询会纠正 */
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  React.useEffect(() => {
+    void load()
+  }, [])
+
+  React.useEffect(() => {
+    if (state?.state !== 'downloading' && checking !== true) return undefined
+    const timer = setInterval(load, 1500)
+    return () => clearInterval(timer)
+  }, [state?.state, checking])
+
+  const mb = (bytes: number) => (bytes > 0 ? (bytes / 1048576).toFixed(1) : '0.0')
+  const status = state?.state
+  const tone = status === 'ready' ? '#1f9d63' : status === 'downloading' ? '#96631a' : '#b7791f'
+  const label =
+    status === 'ready'
+      ? `${t('cf.ready')}${state.version === undefined ? '' : ` · v${state.version}`}`
+      : status === 'downloading'
+        ? `${t('cf.downloading')} ${state.percent}% · ${mb(state.received)}/${mb(state.total)} MB`
+        : status === 'failed'
+          ? `${t('cf.failed')}${state.error === undefined ? '' : `: ${state.error}`}`
+          : t('cf.idle')
+
+  return el(
+    'div',
+    { 'data-share-cloudflared': status ?? 'unknown', style: { margin: '18px 0 2px' } },
+    el(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+      el('span', { style: { fontSize: 12.5, fontWeight: 500 } }, t('cf.title')),
+      el(
+        'span',
+        { style: { fontSize: 11.5, padding: '1px 8px', borderRadius: 999, color: tone, background: 'color-mix(in srgb, currentColor 12%, transparent)' } },
+        label,
+      ),
+      el('span', { style: { flex: 1 } }),
+      el(
+        'button',
+        {
+          type: 'button',
+          'data-share-cf-check': 'true',
+          disabled: disabled || checking,
+          onClick: check,
+          style: {
+            height: 26, padding: '0 10px', borderRadius: 7, fontSize: 12, cursor: checking ? 'default' : 'pointer',
+            border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
+            color: 'var(--dsw-alias-label-primary)',
+          },
+        },
+        checking ? t('checking') : status === 'failed' ? t('cf.retry') : t('cf.check'),
+      ),
+    ),
+    el('div', { style: { marginTop: 4, fontSize: 12, lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } }, t('cf.hint')),
+  )
+}
+
 /** 单字段：本地缓冲，失焦 / 回车提交；被拒时回读宿主值。 */
 function Field(props) {
   const { fieldKey, value, disabled, secret, numeric, t, onCommit, resetToken } = props
@@ -481,6 +568,8 @@ export function SettingsCard(props) {
       ),
     ),
 
+    el(CloudflaredPanel, { t, disabled }),
+
     // 各通道自己的配置（互不排斥）
     section('surge', ['surgeToken']),
     section('named', ['tunnelToken', 'tunnelHostname']),
@@ -692,6 +781,14 @@ export const zh = {
   'channel.named': '命名隧道（自有域名）',
   'channel.surge': 'Surge',
   'channel.lan': '仅局域网',
+  'cf.title': '快速隧道依赖',
+  'cf.ready': '已就绪',
+  'cf.downloading': '下载中',
+  'cf.failed': '下载失败',
+  'cf.idle': '等待下载',
+  'cf.check': '检查',
+  'cf.retry': '重试下载',
+  'cf.hint': '快速隧道需要一个 cloudflared 可执行文件（约 20 MB）：插件加载时就在后台自动下载，这里能看到进度。想跳过下载可以先 `brew install cloudflared`，插件会直接用它。',
   'field.port': '分享服务端口',
   'field.port.hint': '0 = 随机端口；命名隧道模式必须固定（默认 3089）。',
   'field.ttlHours': '默认有效期（小时）',
@@ -771,6 +868,14 @@ export const en = {
   'channel.named': 'Named tunnel (own domain)',
   'channel.surge': 'Surge',
   'channel.lan': 'LAN only',
+  'cf.title': 'Quick-tunnel dependency',
+  'cf.ready': 'Ready',
+  'cf.downloading': 'Downloading',
+  'cf.failed': 'Download failed',
+  'cf.idle': 'Waiting to download',
+  'cf.check': 'Check',
+  'cf.retry': 'Retry download',
+  'cf.hint': 'Quick tunnels need the cloudflared binary (~20 MB). It downloads automatically when the plugin loads; progress shows here. To skip it, `brew install cloudflared` first and the plugin will use that.',
   'field.port': 'Share server port',
   'field.port.hint': '0 = random. Named tunnels need a fixed port (3089 by default).',
   'field.ttlHours': 'Default lifetime (hours)',

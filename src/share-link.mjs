@@ -44,7 +44,7 @@ export const LIMITS = {
  * 首次分享要下载 cloudflared（约 20 MB）。请求里最多等这么久，超过就交出进度、
  * 让用户重试——把「卡住几十秒没有任何反馈」换成「告诉你在下什么、下到哪」。
  */
-const WARM_WAIT_MS = 8000
+const WARM_WAIT_MS = 2000
 
 /** 下载参数：前 3 秒跑不到 200 KB 就判慢、换下一个源；15 秒没新数据算卡死。 */
 const DOWNLOAD = Object.freeze({
@@ -496,6 +496,9 @@ export class ShareManager {
     await this.#listen()
     this.sweep()
     this.#dropStaleQuickShares()
+    // 装上就开始下：cloudflared 是快速隧道的前置，等到用户点分享才下就变成「卡住」。
+    // 只下载，不连隧道——没在用快速隧道的用户不该多一个公网入口和一个常驻进程。
+    void this.warm()
   }
 
   async stop() {
@@ -681,9 +684,28 @@ export class ShareManager {
 
   /** 当前 cloudflared 预热状态（给设置页与分享弹窗看进度）。 */
   downloadInfo() {
-    const { state, received, total, path, error } = this.download
+    const { state, received, total, path, error, version } = this.download
     const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
-    return { state, received, total, percent, path, error }
+    return { state, received, total, percent, path, error, version }
+  }
+
+  /**
+   * 设置页的「检查」：确认 cloudflared 在不在、能不能跑、什么版本。
+   *
+   * 缺了就顺手开始下载（与 `start()` 自动下载同一套幂等逻辑）；返回当前状态，
+   * 调用方不需要等下载结束。
+   * @returns {Promise<ReturnType<ShareManager['downloadInfo']>>}
+   */
+  async check() {
+    const cached = this.#cachedCloudflared()
+    if (cached === undefined) {
+      void this.warm()
+      return this.downloadInfo()
+    }
+    const output = await runOnce(cached, ['--version']).catch(() => undefined)
+    const version = output === undefined ? undefined : /version\s+([0-9][^\s]*)/i.exec(output)?.[1]
+    this.download = { state: 'ready', received: 1, total: 1, path: cached, version }
+    return this.downloadInfo()
   }
 
   /**
@@ -716,21 +738,6 @@ export class ShareManager {
     }
     await this.downloadTask
     return this.downloadInfo()
-  }
-
-  /**
-   * 预热快速隧道：先把 cloudflared 准备好，再**把隧道连上**。
-   *
-   * 冷启动实测约 9 秒（握手 + 分配主机名），而用户打开弹窗到点「生成链接」之间
-   * 往往就是这几秒——这段等在这里，不该算在发布上。失败不抛：发布时还会再试。
-   * @returns {Promise<void>}
-   */
-  async prewarm() {
-    const state = await this.warm()
-    if (state.state !== 'ready') return
-    await this.#ensureOrigin('quick').catch((error) => {
-      this.ctx.logger?.warn?.(`[share-link] 隧道预热失败：${String(error)}`)
-    })
   }
 
   /** 已经可用的 cloudflared：显式配置 > 缓存 > PATH。 */
@@ -1340,6 +1347,39 @@ function formatMb(bytes) {
   if (!(bytes > 0)) return '0 MB'
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+/**
+ * 跑一个可执行文件并收集输出（带超时），用于「检查」这类一次性探测。
+ * @param {string} binary
+ * @param {string[]} args
+ * @param {number} [timeoutMs]
+ * @returns {Promise<string>}
+ */
+function runOnce(binary, args, timeoutMs = 5000) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`${binary} 超时`))
+    }, timeoutMs)
+    child.stdout.on('data', (chunk) => {
+      output += String(chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      output += String(chunk)
+    })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on('exit', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolvePromise(output)
+      else reject(new Error(`${binary} 退出 ${code}`))
+    })
+  })
 }
 
 /**
