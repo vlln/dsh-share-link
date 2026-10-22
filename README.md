@@ -20,7 +20,7 @@ dsh plugin --profile web add github:vlln/dsh-share-link
 > **Plugins → Add plugin** 里填包名安装。
 
 - 卸载：`dsh plugin --profile web remove @vlln/dsh-share-link`
-- 快速隧道需要一个 `cloudflared` 可执行文件（约 20 MB）：**插件加载后就在后台自动下载**，`Plugins → Share Link` 里有「快速隧道依赖」状态条与「检查」按钮（能看到版本、手动重试）。想跳过下载可以先 `brew install cloudflared`，插件会直接用 PATH 上那份；只用 Surge 的话完全不依赖它
+- 快速隧道需要一个 `cloudflared` 可执行文件（约 20 MB）：**插件加载后会起一个独立的下载进程**（`detached`，dsh 重启、插件重载都不打断它）。`Plugins → Share Link` 里有「快速隧道依赖」行：下载进度、是否就绪、版本，右侧「检查」按钮可以手动复查/重试。想跳过下载可以先 `brew install cloudflared`，插件会直接用 PATH 上那份；只用 Surge 的话完全不依赖它
 
 ### 装好之后怎么确认
 
@@ -71,7 +71,7 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
 - 顶部状态条：现在能不能分享、缺什么
 - **默认通道**：只决定弹窗预选哪个
-- **快速隧道依赖**：cloudflared 的下载状态与版本，「检查」会重新探测并重试下载
+- **快速隧道依赖**：cloudflared 的下载进度与版本（下载跑在独立进程里），「检查」手动复查/重试
 - 渠道配置卡：每个通道自己的参数，互不排斥；没配好的自动展开并给步骤与官方入口
 - **分享页样式**：5 种预设 + 自定义 CSS，选完立刻预览
 - **已发布的链接**：哪些还活着、一键撤销
