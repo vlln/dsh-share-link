@@ -313,39 +313,65 @@ function SharesPanel(props) {
   const { t } = props
   const [rows, setRows] = React.useState(null)
   const [error, setError] = React.useState('')
-  const [pending, setPending] = React.useState('')
+  // 每个 id 各自 pending：以前是一个字符串，点 B 会把 A 的「撤销中…」抹掉，
+  // 看起来像 A 的撤销被中断了（用户反馈）。
+  const [pending, setPending] = React.useState(() => new Set())
+  // list 请求的代次：只让最新一次写 rows。
+  const seq = React.useRef(0)
 
   const load = React.useCallback(() => {
-    // 先清错误：否则一次失败的 list 会把「重试」按钮和列表一起挡在早返回后面，
-    // 面板永久停在错误态。
+    const mine = (seq.current += 1)
+    // 先清错误：否则一次失败的 list 会把「重试」按钮和列表一起挡在早返回后面。
     setError('')
     fetch('/api/share-link/list')
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-      .then((payload) => setRows(payload.items ?? []))
-      .catch((failure) => setError(String(failure?.message ?? failure)))
+      .then((payload) => {
+        // 过期响应直接丢：打开面板时那次 list 如果比撤销慢，返回的旧列表会把
+        // 刚删掉的行又画回来——就是「撤销完按钮弹回撤销、链接还在」的成因。
+        if (mine !== seq.current) return
+        setRows(payload.items ?? [])
+      })
+      .catch((failure) => {
+        if (mine !== seq.current) return
+        setError(String(failure?.message ?? failure))
+      })
   }, [])
 
   React.useEffect(() => {
     load()
   }, [load])
 
-  const revoke = async (id) => {
-    setPending(id)
-    setError('')
-    try {
-      const response = await fetch('/api/share-link/revoke', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id }),
+  const revoke = React.useCallback(
+    async (id) => {
+      setPending((prev) => {
+        const next = new Set(prev)
+        next.add(id)
+        return next
       })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      load()
-    } catch (failure) {
-      setError(String(failure?.message ?? failure))
-    } finally {
-      setPending('')
-    }
-  }
+      setError('')
+      try {
+        const response = await fetch('/api/share-link/revoke', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ id }),
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        // 先本地删掉，不等第二次 list 回来：按钮和行必须同时消失，否则中间那
+        // 一两秒看起来就是「撤销没生效」。
+        setRows((prev) => (prev === null ? prev : prev.filter((row) => row.id !== id)))
+        load()
+      } catch (failure) {
+        setError(String(failure?.message ?? failure))
+      } finally {
+        setPending((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    },
+    [load],
+  )
 
   if (error !== '') {
     return el(
@@ -369,7 +395,7 @@ function SharesPanel(props) {
     rows.map((row) =>
       el(
         'div',
-        { key: row.id, style: { display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 } },
+        { key: row.id, 'data-share-row': row.id, style: { display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 } },
         el('span', { style: { color: 'var(--dsw-alias-label-tertiary)', minWidth: 44 } }, row.kind === 'session' ? t('shares.session') : t('shares.file')),
         el('a', {
           href: row.url,
@@ -379,14 +405,14 @@ function SharesPanel(props) {
         }, row.url),
         el('button', {
           type: 'button',
-          disabled: pending === row.id,
+          disabled: pending.has(row.id),
           onClick: () => void revoke(row.id),
           style: {
             height: 24, padding: '0 10px', fontSize: 12, borderRadius: 7, cursor: 'pointer',
             border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent',
             color: 'var(--dsw-alias-label-secondary)',
           },
-        }, pending === row.id ? t('shares.revoking') : t('shares.revoke')),
+        }, pending.has(row.id) ? t('shares.revoking') : t('shares.revoke')),
       ),
     ),
   )
