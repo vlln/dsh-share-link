@@ -10,14 +10,14 @@
 
 ## 装
 
-还没发布到 npm，所以现在用命令行装 **git 源**（构建产物已在仓库里，装完直接用）：
+从 npm 装（构建产物随包发布，装完直接用）：
 
 ```sh
-dsh plugin --profile web add github:vlln/dsh-share-link
+dsh plugin --profile web add @vlln/dsh-share-link
 ```
 
-> 发布到 npm 之后就变成 `dsh plugin --profile web add @vlln/dsh-share-link`，也可以直接在
-> **Plugins → Add plugin** 里填包名安装。
+> 也可以直接在 **Plugins → Add plugin** 里填 `@vlln/dsh-share-link`。
+> 想跟最新提交而不是发布版：`dsh plugin --profile web add github:vlln/dsh-share-link`。
 
 - 卸载：`dsh plugin --profile web remove @vlln/dsh-share-link`
 - 快速隧道需要一个 `cloudflared` 可执行文件（约 20 MB）：**插件加载后就在后台下载**（跑在插件进程里，退出 dsh 即停）。`Plugins → Share Link` 里有「快速隧道依赖」行：下载进度、是否就绪、版本；点「检查」之后按钮本身显示查到的结果（`✓ v2026.10.3` / 下载百分比 / `✗ 下载失败`），再点一次就是重新检查。想跳过下载可以先自己装一个——macOS `brew install cloudflared`、Windows `winget install --id Cloudflare.cloudflared -e`、Linux 用官方 deb/rpm 或二进制；装好后插件会直接用 PATH 上那份。只用 Surge 的话完全不依赖它
