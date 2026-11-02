@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto'
 import MarkdownIt from 'markdown-it'
 
 import { FONT_FACE_CSS } from './article-fonts.mjs'
+import { FAVICON_LINK } from './favicon.mjs'
 
 /**
  * `.md` 分享专用的渲染器。
@@ -879,6 +880,7 @@ export function renderSessionPage(input) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+${FAVICON_LINK}
 <meta name="theme-color" content="${THEME_COLOR[theme] ?? '#edf2f6'}">
 ${CSP_META}
 <title>${escapeHtml(title)}</title>
@@ -945,6 +947,7 @@ export function renderMarkdownDocument(input) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+${FAVICON_LINK}
 <meta name="theme-color" content="${THEME_COLOR[theme] ?? '#edf2f6'}">
 ${CSP_META}
 <title>${escapeHtml(title)}</title>
@@ -989,6 +992,7 @@ export function renderDirectoryIndex(input) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+${FAVICON_LINK}
 <meta name="theme-color" content="${THEME_COLOR[theme] ?? '#edf2f6'}">
 ${CSP_META}
 <title>${escapeHtml(title)}</title>
