@@ -68,8 +68,8 @@ dsh 跑在本机，产物却经常要给外面的人看：一段对话要发给�
 
 | 样例 | 链接 |
 |---|---|
-| 会话快照：一场评审整理成「结论 / 要改的点 / 排期」 | https://dsh-share-ck8p71x6.surge.sh/ |
-| Markdown 文档：列表 / 引用 / 表格 / 代码 / 折叠块 | https://dsh-share-kgx9egio.surge.sh/ |
+| 会话快照：一场评审整理成「结论 / 要改的点 / 排期」 | https://dsh-share-4q701m8q.surge.sh/ |
+| Markdown 文档：列表 / 引用 / 表格 / 代码 / 折叠块 | https://dsh-share-mmslwans.surge.sh/ |
 
 ### 让 agent 帮你发
 
