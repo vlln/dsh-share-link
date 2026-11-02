@@ -1,4 +1,26 @@
-# dsh-share-link bundle：挂 Node half（分享服务 + 工具 + 路由）与 client half（分享入口）。
+# dsh-share-link bundle：
+#
+#   dsh-share-link        core —— 分享服务（ctx.shareLink）、只读路由、client half、设置卡
+#   dsh-share-link-tool-* 四个工具，各自一个 Cordis 入口（同包 `./tools/*`）
+#
+# 工具**默认关闭**：发到公网是需要用户点头的动作，装完不会自己挂上去。在 Plugins 页
+# 的 Components 列表里按需打开——关掉某一行就是关掉那个工具，不需要插件内的开关。
 - insert:
     - id: dsh-share-link
       name: '@vlln/dsh-share-link'
+
+    - id: dsh-share-link-tool-session
+      name: '@vlln/dsh-share-link/tools/share-session'
+      disabled: true
+
+    - id: dsh-share-link-tool-artifact
+      name: '@vlln/dsh-share-link/tools/share-artifact'
+      disabled: true
+
+    - id: dsh-share-link-tool-list
+      name: '@vlln/dsh-share-link/tools/share-list'
+      disabled: true
+
+    - id: dsh-share-link-tool-revoke
+      name: '@vlln/dsh-share-link/tools/share-revoke'
+      disabled: true

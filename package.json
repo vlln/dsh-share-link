@@ -1,7 +1,7 @@
 {
   "name": "@vlln/dsh-share-link",
   "description": "把会话或产物发布成只读公网链接：对话快照、HTML/Markdown 产物，可换风格、可撤销。",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "main": "lib/index.mjs",
   "icon": "./icon.svg",
@@ -20,6 +20,18 @@
   "exports": {
     ".": {
       "default": "./lib/index.mjs"
+    },
+    "./tools/share-session": {
+      "default": "./lib/tools/share-session.mjs"
+    },
+    "./tools/share-artifact": {
+      "default": "./lib/tools/share-artifact.mjs"
+    },
+    "./tools/share-list": {
+      "default": "./lib/tools/share-list.mjs"
+    },
+    "./tools/share-revoke": {
+      "default": "./lib/tools/share-revoke.mjs"
     },
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",

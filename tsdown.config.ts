@@ -2,7 +2,15 @@
 
 export default [
   {
-    entry: ['src/index.mjs'],
+    entry: {
+      index: 'src/index.mjs',
+      // 四个工具是独立 Cordis 入口（同包多入口）：各自一行、默认关闭，
+      // 在 Plugins 页的 Components 里单独开关。
+      'tools/share-session': 'src/tools/share-session.mjs',
+      'tools/share-artifact': 'src/tools/share-artifact.mjs',
+      'tools/share-list': 'src/tools/share-list.mjs',
+      'tools/share-revoke': 'src/tools/share-revoke.mjs',
+    },
     format: 'esm',
     platform: 'node',
     target: 'es2024',

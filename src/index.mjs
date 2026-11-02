@@ -11,14 +11,18 @@
  */
 
 import Schema from '@deepseek-ai/schemastery'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 
-import { CODE_LENGTH, ShareError, ShareManager, TTL_HOURS } from './share-link.mjs'
+import { CODE_LENGTH, ShareManager, TTL_HOURS } from './share-link.mjs'
 
 export const name = 'dsh-share-link'
 
-/** 分享服务依赖的宿主能力：工具注册、会话读取、同源 HTTP 路由。 */
-export const inject = ['tools', 'sessionQuery', 'connection']
+/**
+ * 宿主能力：会话读取 + 同源 HTTP 路由。
+ *
+ * 四个分享工具**不在这里**——它们是同包另四个入口（`./tools/*`），各自一行、
+ * 默认关闭，经 `ctx.shareLink` 服务使用这里的管理器。core 只提供服务，不注册工具。
+ */
+export const inject = ['sessionQuery', 'connection']
 
 /** 配置项。`port` 传 0 表示随机端口（推荐，避免与宿主端口冲突）。 */
 /** 配置默认值（设置卡与运行时共用同一份，避免两处漂移）。 */
@@ -37,10 +41,6 @@ export const DEFAULTS = Object.freeze({
   pageTheme: 'article',
   pageThemeCss: '',
   idLength: CODE_LENGTH.default,
-  toolShareSession: false,
-  toolShareArtifact: false,
-  toolShareList: false,
-  toolShareRevoke: false,
 })
 
 export const Config = Schema.object({
@@ -77,10 +77,6 @@ export const Config = Schema.object({
     .volatile()
     .description('分享页预设风格；custom = 只用 pageThemeCss'),
   pageThemeCss: Schema.string().default('').volatile().description('自定义 CSS，追加在预设之后（可只写变量覆盖）'),
-  toolShareSession: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_session（默认关闭）'),
-  toolShareArtifact: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_artifact（默认关闭）'),
-  toolShareList: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_list（默认关闭）'),
-  toolShareRevoke: Schema.boolean().default(false).volatile().description('允许 agent 调用 share_revoke（默认关闭）'),
 })
 
 /**
@@ -102,50 +98,11 @@ export function readConfig(raw) {
   return { ...DEFAULTS, ...unwrap(raw ?? {}) }
 }
 
-/** 通道的中文说法，用于工具回复。 */
-const CHANNEL_LABEL = {
-  tunnel: '公网隧道',
-  lan: '局域网',
-  surge: 'Surge 持久域名',
-}
-
-const TEXT_OUTPUT = {
-  schema: { type: 'string' },
-  render: (_args, value) => [{ type: 'text', text: value }],
-}
-
-/** 失败时把引导也交给 agent，让它能直接告诉用户下一步点什么。 */
-function describeError(error) {
-  const message = String(error?.message ?? error)
-  if (!(error instanceof ShareError) || error.guide === undefined) return message
-  const { title, body, href, linkText, command } = error.guide
-  return [
-    message,
-    `引导：${title}——${body}`,
-    href === undefined ? '' : `入口：${linkText ?? href} ${href}`,
-    command === undefined || command === null ? '' : `命令：${command}`,
-  ]
-    .filter(Boolean)
-    .join('\n')
-}
-
-/** 分享成功后的统一文案：链接 + 有效期 + 撤销提示。 */
-function describeShare(entry) {
-  const expires = new Date(entry.expiresAt).toISOString().replace('T', ' ').slice(0, 16)
-  return [
-    `已发布：${entry.url}`,
-    `类型：${entry.kind === 'session' ? '会话快照（只读）' : '文件/目录（只读）'} · 通道：${CHANNEL_LABEL[entry.provider] ?? entry.provider} · 到期：${expires} UTC`,
-    entry.degraded === true
-      ? `⚠️ 已降级为局域网链接：${entry.degradedReason ?? '公网通道不可用'}（链接只在同一网络内可访问）`
-      : '',
-    `撤销：share_revoke id=${entry.id}`,
-  ]
-    .filter(Boolean)
-    .join('\n')
-}
-
 /**
- * 注册分享服务、工具与同源路由。
+ * 注册分享服务（`ctx.shareLink`）与只读路由。
+ *
+ * 工具由同包的四个入口各自注册（见 `src/tools/*`），它们 `inject: ['tools','shareLink']`
+ * 并使用这里的服务；这样每个工具都能在 Plugins 页单独开关，不需要额外的配置开关。
  * @param {any} ctx - host 上下文。
  * @param {any} [config]
  */
@@ -159,7 +116,6 @@ export function apply(ctx, config = {}) {
       ctx.on('loader/volatile-update', () => {
         liveConfig = readConfig(config)
         manager.config = liveConfig
-        syncTools()
       }),
     'share-link: live config',
   )
@@ -176,115 +132,17 @@ export function apply(ctx, config = {}) {
     'share-link: readonly server',
   )
 
-  // ------------------------------------------------------------------ tools
+  // ---------------------------------------------------------------- service
   //
-  // 四个工具**默认关闭**：agent 不应在用户没同意的情况下把内容发到公网。
-  // 开关是 volatile 叶，改完在 loader/volatile-update 里重新注册，无需重挂载。
+  // 四个工具（`./tools/*`）都通过这个服务使用管理器。只暴露需要的四个动作，
+  // 不把整个 ShareManager 抛出去。
 
-  const TOOL_DEFS = {
-    toolShareSession: defineTool({
-          name: 'share_session',
-          description:
-            'Publish a read-only snapshot of the current session as a public link. Use when the user asks to share this conversation. The snapshot is static, redacted, and stops working after revocation or expiry.',
-          parameters: {
-            include_tool_calls: {
-              type: 'boolean',
-              description: '是否在快照里保留工具名（结果正文始终不保留）',
-            },
-            channel: { type: 'string', description: '通道：quick | surge | named | lan；默认取设置里的默认通道' },
-            title: { type: 'string', description: '分享页标题；默认用会话标题' },
-            ttl_hours: { type: 'number', description: '链接有效期（小时），默认取插件配置' },
-          },
-          output: TEXT_OUTPUT,
-          execute: async (args, exec) => {
-            const sessionId = exec.agent?.session?.id
-            if (typeof sessionId !== 'string') throw new Error('share_session 需要 agent 绑定的会话')
-            const entry = await manager
-              .createSessionShare(sessionId, {
-                includeToolCalls: args.include_tool_calls === true,
-                channel: args.channel,
-                title: args.title,
-                ttlHours: args.ttl_hours,
-              })
-              .catch((error) => {
-                throw new Error(describeError(error))
-              })
-            return describeShare(entry)
-          },
-        }),
-    toolShareArtifact: defineTool({
-          name: 'share_artifact',
-          description:
-            'Publish a local file or directory (HTML page, Markdown, slides, build output) as a read-only public link. A directory without index.html gets a generated file listing; a single .html file is served at the link root.',
-          parameters: {
-            path: { type: 'string', required: true, description: '文件或目录路径，绝对路径或相对会话工作目录' },
-            channel: { type: 'string', description: '通道：quick | surge | named | lan；默认取设置里的默认通道' },
-            title: { type: 'string', description: '分享页标题；默认用文件名' },
-            ttl_hours: { type: 'number', description: '链接有效期（小时）' },
-          },
-          output: TEXT_OUTPUT,
-          execute: async (args, exec) => {
-            const cwd = exec.agent?.session?.header?.cwd ?? process.cwd()
-            const entry = await manager
-              .createPathShare(args.path, {
-                cwd,
-                title: args.title,
-                ttlHours: args.ttl_hours,
-              })
-              .catch((error) => {
-                throw new Error(describeError(error))
-              })
-            return describeShare(entry)
-          },
-        }),
-    toolShareList: defineTool({
-          name: 'share_list',
-          description: 'List the currently active share links with their ids, kinds, and expiry.',
-          parameters: {},
-          output: TEXT_OUTPUT,
-          execute: async () => {
-            const entries = manager.list()
-            if (entries.length === 0) return '当前没有活跃的分享链接。'
-            return entries
-              .map(
-                (entry) =>
-                  `${entry.id}  ${entry.kind === 'session' ? '会话' : '文件'}  ${new Date(entry.createdAt).toISOString().slice(0, 16)} UTC  ${entry.url}`,
-              )
-              .join('\n')
-          },
-        }),
-    toolShareRevoke: defineTool({
-          name: 'share_revoke',
-          description: 'Revoke one share link by id. The link stops working immediately and its snapshot is deleted from disk.',
-          parameters: {
-            id: { type: 'string', required: true, description: 'share_session / share_artifact 返回的 id' },
-          },
-          output: TEXT_OUTPUT,
-          execute: async (args) =>
-            (await manager.revoke(args.id)) ? `已撤销 ${args.id}，链接立即失效。` : `没有找到 ${args.id}`,
-        }),
-  }
-
-  const toolDisposers = new Set()
-  function syncTools() {
-    for (const dispose of toolDisposers) dispose()
-    toolDisposers.clear()
-    for (const [flag, definition] of Object.entries(TOOL_DEFS)) {
-      if (liveConfig[flag] !== true) continue
-      toolDisposers.add(ctx.tools.register(definition))
-    }
-  }
-
-  ctx.effect(
-    () => {
-      syncTools()
-      return () => {
-        for (const dispose of toolDisposers) dispose()
-        toolDisposers.clear()
-      }
-    },
-    'share-link: tools',
-  )
+  ctx.provide('shareLink', {
+    createSessionShare: (sessionId, options) => manager.createSessionShare(sessionId, options),
+    createPathShare: (path, options) => manager.createPathShare(path, options),
+    list: () => manager.list(),
+    revoke: (id) => manager.revoke(id),
+  })
 
   // ----------------------------------------------------------------- routes
 
