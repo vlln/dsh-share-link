@@ -78,8 +78,34 @@ test('分享页带 CSP，且 script-src 的 hash 与页面里的内联脚本逐�
   assert.match(page, /<meta http-equiv="Content-Security-Policy"/)
   const script = /<script>([\s\S]*?)<\/script>/.exec(page)?.[1]
   assert.ok(script !== undefined, '页面里应该有复制脚本')
-  const hash = createHash('sha256').update(`<script>${script}</script>`).digest('base64')
+  // 浏览器对 hash-source 比对的是**元素正文**，不含 `<script>` 标签本身：
+  // 0.7.2 之前这里把标签也算了进去，页面里的复制脚本其实一直被 CSP 拦掉。
+  const hash = createHash('sha256').update(script).digest('base64')
   assert.ok(PAGE_CSP.includes(`'sha256-${hash}'`), 'CSP hash 与脚本不一致，复制按钮会被浏览器拦掉')
+})
+
+test('内嵌字体放行：CSP 有 font-src data:，页面里有 @font-face', () => {
+  const page = renderSessionPage({
+    title: 't',
+    sessionId: 's',
+    createdAt: Date.UTC(2026, 9, 22),
+    messages: [{ role: 'user', text: 'hi' }],
+  })
+  assert.ok(PAGE_CSP.includes('font-src data:'), PAGE_CSP)
+  assert.match(page, /@font-face\{font-family:"DM Sans"/)
+  assert.match(page, /@font-face\{font-family:"Fragment Mono"/)
+})
+
+test('每条回复的「复制」按钮指向这一轮自己的正文', () => {
+  const page = renderSessionPage({
+    title: 't',
+    sessionId: 's',
+    createdAt: Date.UTC(2026, 9, 22),
+    messages: [{ role: 'assistant', text: '答案' }],
+  })
+  assert.match(page, /<section class="turn turn--assistant">/)
+  assert.match(page, /data-copy="message"/)
+  assert.match(page, /<div class="turn__body" data-copy-body>/)
 })
 
 test('脱敏：家目录压成 ~，但不动 URL 里的 /home/', () => {

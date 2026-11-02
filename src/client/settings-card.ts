@@ -755,26 +755,26 @@ export function SettingsCard(props) {
     el(
       'div',
       { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-      ['paper', 'github', 'notion', 'sepia', 'terminal', 'custom'].map((id) =>
+      ['article', 'paper', 'github', 'notion', 'sepia', 'terminal', 'custom'].map((id) =>
         el('button', {
           key: id,
           type: 'button',
           disabled,
           'data-share-theme': id,
-          'data-active': (state.value.pageTheme ?? 'paper') === id ? 'true' : 'false',
+          'data-active': (state.value.pageTheme ?? 'article') === id ? 'true' : 'false',
           onClick: () => commit('pageTheme', id),
           style: {
             height: 30, padding: '0 11px', fontSize: 12.5, borderRadius: 8, cursor: 'pointer',
-            border: (state.value.pageTheme ?? 'paper') === id ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '0.5px solid var(--dsw-alias-border-l2)',
-            background: (state.value.pageTheme ?? 'paper') === id ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
-            color: (state.value.pageTheme ?? 'paper') === id ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
-            fontWeight: (state.value.pageTheme ?? 'paper') === id ? 600 : 400,
+            border: (state.value.pageTheme ?? 'article') === id ? '1px solid var(--dsw-alias-brand, #4d6bfe)' : '0.5px solid var(--dsw-alias-border-l2)',
+            background: (state.value.pageTheme ?? 'article') === id ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+            color: (state.value.pageTheme ?? 'article') === id ? 'var(--dsw-alias-label-primary)' : 'var(--dsw-alias-label-secondary)',
+            fontWeight: (state.value.pageTheme ?? 'article') === id ? 600 : 400,
           },
         }, t(`theme.${id}`)),
       ),
     ),
-    el(ThemePreview, { theme: state.value.pageTheme ?? 'paper', customCss: state.value.pageThemeCss ?? '' }),
-    (state.value.pageTheme ?? 'paper') === 'custom'
+    el(ThemePreview, { theme: state.value.pageTheme ?? 'article', customCss: state.value.pageThemeCss ?? '' }),
+    (state.value.pageTheme ?? 'article') === 'custom'
       ? el(CssArea, {
           value: state.value.pageThemeCss ?? '',
           disabled,
@@ -889,7 +889,8 @@ export const zh = {
   'tools.list': '列出还活着的链接',
   'tools.revoke': '撤销某条链接',
   'theme.title': '分享页样式',
-  'theme.hint': '选一个预设，或选「自定义」写 CSS（变量：--bg --fg --muted --line --code-bg --accent）。新分享生效，已发布的不会变。',
+  'theme.hint': '选一个预设，或选「自定义」写 CSS（变量：--bg --fg --muted --line --code-bg --accent --font-sans --font-mono）。新分享生效，已发布的不会变。',
+  'theme.article': '文章（默认）',
   'theme.paper': '暖纸',
   'theme.github': 'GitHub',
   'theme.notion': 'Notion',
@@ -980,7 +981,8 @@ export const en = {
   'tools.list': 'List active links',
   'tools.revoke': 'Revoke a link',
   'theme.title': 'Share page style',
-  'theme.hint': 'Pick a preset, or choose Custom and write CSS (vars: --bg --fg --muted --line --code-bg --accent). Applies to new shares.',
+  'theme.hint': 'Pick a preset, or choose Custom and write CSS (vars: --bg --fg --muted --line --code-bg --accent --font-sans --font-mono). Applies to new shares.',
+  'theme.article': 'Article (default)',
   'theme.paper': 'Paper',
   'theme.github': 'GitHub',
   'theme.notion': 'Notion',

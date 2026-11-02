@@ -771,12 +771,18 @@ export class ShareManager {
    * @returns {string}
    */
   previewPage(options = {}) {
+    // 预览 iframe 只有 300px 高：标题区按真实比例会吃掉整屏，这里压一档——只压
+    // hero 的内边距与字号，版式与主题都还是真的那一套。
+    const compact = '\n/* 预览：缩小标题区，让正文露出来 */\n' +
+      '.hero{padding:34px 24px 26px}\n.hero__title{font-size:26px}\n' +
+      '.hero__eyebrow{margin-bottom:12px;font-size:10.5px}\n.hero__meta{margin-top:12px}\n' +
+      '.hero__actions{margin-top:16px}\n'
     return renderSessionPage({
       title: '分享页样式预览',
       sessionId: 'session-预览',
       createdAt: Date.now(),
       theme: options.theme ?? this.config.pageTheme,
-      customCss: options.customCss ?? this.config.pageThemeCss,
+      customCss: `${options.customCss ?? this.config.pageThemeCss}${compact}`,
       messages: [
         { role: 'user', text: '这段对话会被发布成一个只读链接，对方不用装 dsh 也能看。' },
         {

@@ -34,7 +34,7 @@ export const DEFAULTS = Object.freeze({
   surgeToken: '',
   surgeDomain: '',
   surgePrefix: 'dsh-share',
-  pageTheme: 'paper',
+  pageTheme: 'article',
   pageThemeCss: '',
   idLength: CODE_LENGTH.default,
   toolShareSession: false,
@@ -72,8 +72,8 @@ export const Config = Schema.object({
   surgeToken: Schema.string().default(DEFAULTS.surgeToken).volatile().description('Surge token（`surge tokens add`）；只注入给子进程，不落盘'),
   surgeDomain: Schema.string().default(DEFAULTS.surgeDomain).volatile().description('Surge 域名后缀，例如 example.com；留空用 slug.surge.sh'),
   surgePrefix: Schema.string().default(DEFAULTS.surgePrefix).volatile().description('Surge 子域前缀，最终域名是 <prefix>-<id>.surge.sh'),
-  pageTheme: Schema.union(['paper', 'github', 'notion', 'sepia', 'terminal', 'custom'])
-    .default('paper')
+  pageTheme: Schema.union(['article', 'paper', 'github', 'notion', 'sepia', 'terminal', 'custom'])
+    .default(DEFAULTS.pageTheme)
     .volatile()
     .description('分享页预设风格；custom = 只用 pageThemeCss'),
   pageThemeCss: Schema.string().default('').volatile().description('自定义 CSS，追加在预设之后（可只写变量覆盖）'),
