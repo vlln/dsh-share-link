@@ -12,7 +12,7 @@
     "icon.svg",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs/fonts"
   ],
   "publishConfig": {
     "access": "public"
@@ -49,9 +49,6 @@
       ],
       "platform": "web"
     }
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
   },
   "engines": {
     "node": ">=22.19.0",

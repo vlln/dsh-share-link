@@ -21,7 +21,7 @@
   <a href="https://www.npmjs.com/package/@vlln/dsh-share-link"><img alt="npm 版本" src="https://img.shields.io/npm/v/@vlln/dsh-share-link?style=flat-square&color=111"></a>
   <a href="LICENSE"><img alt="MIT 许可" src="https://img.shields.io/badge/license-MIT-111?style=flat-square"></a>
   <a href="https://github.com/vlln/dsh-share-link/stargazers"><img alt="Star 数" src="https://img.shields.io/github/stars/vlln/dsh-share-link?style=flat-square&color=111"></a>
-  <a href="#兼容性与已知限制"><img alt="需要 dsh 0.2 及以上" src="https://img.shields.io/badge/dsh-0.2%2B-111?style=flat-square"></a>
+  <a href="#兼容性"><img alt="需要 dsh 0.2 及以上" src="https://img.shields.io/badge/dsh-0.2%2B-111?style=flat-square"></a>
 </p>
 
 <br>
@@ -158,7 +158,7 @@ dsh plugin --profile web add @vlln/dsh-share-link
 
 </details>
 
-## 兼容性与已知限制
+## 兼容性
 
 <details>
 <summary>已验证的环境</summary>
@@ -185,6 +185,12 @@ dsh plugin --profile web add @vlln/dsh-share-link
 - 文件名里的符号链接不会进分享。
 
 </details>
+
+## 插件管理
+
+装 / 卸 / 启停都用官方 CLI：`dsh plugin --profile web add|remove @vlln/dsh-share-link`；已装的插件在**侧边栏 Plugins 页**里查看与配置，本插件的设置卡就挂在那个包页上。
+
+四个 agent 工具是独立插件、默认关闭，在同一个包页的 **Components** 列表里逐行开关。
 
 ## 许可
 
