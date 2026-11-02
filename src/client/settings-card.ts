@@ -163,8 +163,11 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
       : status === 'downloading'
         ? `${t('cf.downloading')} ${state.percent}% · ${mb(state.received)}/${mb(state.total)} MB`
         : status === 'failed'
-          ? `${t('cf.failed')}${state.error === undefined ? '' : `: ${state.error}`}`
+          ? t('cf.failed')
           : t('cf.idle')
+
+  // 错误正文（可能带两条下载地址）单独一行显示：塞进徽章会把标题和按钮一起挤扁。
+  const failure = status === 'failed' && typeof state.error === 'string' ? state.error : ''
 
   // 查过之后按钮本身就是结果：✓ 版本 / 下载百分比 / ✗ 失败；仍然可点 = 再查一次。
   const resultLabel =
@@ -183,14 +186,20 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
     { 'data-share-cloudflared': status ?? 'unknown', style: { margin: '18px 0 2px' } },
     el(
       'div',
-      { style: { display: 'flex', alignItems: 'center', gap: 10 } },
-      el('span', { style: { fontSize: 12.5, fontWeight: 500 } }, t('cf.title')),
+      { style: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } },
+      el('span', { style: { fontSize: 12.5, fontWeight: 500, flexShrink: 0, whiteSpace: 'nowrap' } }, t('cf.title')),
       el(
         'span',
-        { style: { fontSize: 11.5, padding: '1px 8px', borderRadius: 999, color: tone, background: 'color-mix(in srgb, currentColor 12%, transparent)' } },
+        {
+          style: {
+            flexShrink: 0, whiteSpace: 'nowrap',
+            fontSize: 11.5, padding: '1px 8px', borderRadius: 999, color: tone,
+            background: 'color-mix(in srgb, currentColor 12%, transparent)',
+          },
+        },
         label,
       ),
-      el('span', { style: { flex: 1 } }),
+      el('span', { style: { flex: 1, minWidth: 8 } }),
       el(
         'button',
         {
@@ -201,6 +210,7 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
           disabled: disabled || checking,
           onClick: check,
           style: {
+            flexShrink: 0, whiteSpace: 'nowrap',
             height: 26, padding: '0 10px', borderRadius: 7, fontSize: 12, cursor: checking ? 'default' : 'pointer',
             border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-elevated, #fff)',
             color: checked && status === 'ready' ? '#1f9d63' : 'var(--dsw-alias-label-primary)',
@@ -209,6 +219,22 @@ function CloudflaredPanel(props: { t: (key: string) => string; disabled: boolean
         checking ? t('checking') : checked ? resultLabel : status === 'failed' ? t('cf.retry') : t('cf.check'),
       ),
     ),
+    failure === ''
+      ? null
+      : el(
+          'div',
+          {
+            'data-share-cf-error': 'true',
+            style: {
+              marginTop: 8, padding: '8px 10px', borderRadius: 8,
+              background: 'var(--dsw-alias-state-warn-tertiary)',
+              color: 'var(--dsw-alias-state-warn-label)',
+              fontSize: 11.5, lineHeight: 1.65,
+              overflowWrap: 'anywhere', wordBreak: 'break-word', whiteSpace: 'pre-wrap',
+            },
+          },
+          failure,
+        ),
     el(
       'div',
       { style: { marginTop: 4, fontSize: 12, lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' } },
