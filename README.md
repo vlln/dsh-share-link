@@ -63,6 +63,17 @@ https://github.com/user-attachments/assets/5344d279-f8d6-44ec-a380-755b4bb1a062
 
 > 装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 的话，文件由它的编辑器接管，工具条那一排会换成它自己的页头——分享按钮同样在那一行（最右端的链接图标），点开是同一个弹窗。
 
+### 在线样例
+
+两份用默认样式真发出去的页面，可以直接点开看（手机也行），不用装任何东西：
+
+| 样例 | 链接 |
+|---|---|
+| 会话快照：一场评审整理成「结论 / 要改的点 / 排期」 | https://dsh-share-ck8p71x6.surge.sh/ |
+| Markdown 文档：列表 / 引用 / 表格 / 代码 / 折叠块 | https://dsh-share-kgx9egio.surge.sh/ |
+
+内容是为演示编的样例，没有产品名和人名；样式就是装上插件后的默认样子（`article` 预设）。两份都发布在 Surge 上，属于静态部署，dsh 进程退出也不会失效——这也顺便说明了「换通道」的差别：想要固定地址就用 Surge 或命名隧道。
+
 ### 配置与样式
 
 ![设置卡](docs/preview-settings.png)
